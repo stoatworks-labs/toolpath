@@ -522,7 +522,8 @@ build, at 320×180 and 1280×720, with the same checks passing at 640×480, 333�
 - **The trace at 1080p and 4K** is on a grid 1.5 and 3 px a sample; every check ran at
   or under 1280 wide, where it is one sample a pixel, except by hand at 1920×1080.
 - **The clock-unit voting** is readout's, which has met Arena; this plugin has not.
-- **The Windows build is CI-only** and CI cannot run yet.
+- **Windows has only met Arena on software rendering**: v0.1.0's CI build in the
+  fleet gate on win-lab (Arena 7.27.1, llvmpipe). See the README's status.
 - **No OpenFX port and no browser demo.** Not required for 0.1.0.
 - **The provisional About headers and ATTRIBUTIONS** are hand copies (above).
 - **Nothing has been through a show.**

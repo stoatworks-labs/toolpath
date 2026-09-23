@@ -12,8 +12,8 @@
 > one 5 px wider is cut end to end, a stepover past the tool's diameter leaves
 > ridges s − 2r wide to within 0.15 px, and the tool covers exactly Feed pixels
 > of path a second at 60 and at 30 fps — with eight negative controls that prove
-> each check can fail, one of them that the reduced field is the one in use. It has **never been loaded into
-> Resolume**. It is loaded by [oxbow](https://github.com/stoatworks-labs/oxbow),
+> each check can fail, one of them that the reduced field is the one in use. It has **never been loaded into Resolume on macOS**; on Windows it passed the
+> fleet Arena gate. On macOS it is loaded by [oxbow](https://github.com/stoatworks-labs/oxbow),
 > which is a real FFGL host and is not Resolume. See [Status](#status).
 
 CNC pocketing from a distance field, as an FFGL effect for
@@ -140,15 +140,14 @@ raster. macOS figures only.
 
 ### Not established
 
-It has **never been loaded into Resolume**, on either platform. Everything above
+It has **never been loaded into Resolume on macOS**. Everything above
 was compiled, rendered and measured offline against the real plugin class in a
 headless CGL context, plus an `oxbow` load. How 25 controls in five groups
 present in Arena's inspector, what Resolume's clock does to Latch across a clip
 retrigger, and whether a Live job at 4K keeps up inside Resolume's own frame are
 untested. The look has only
-been seen on a synthetic test card, never on footage. The Windows build is
-CI-only and has never run. No OpenFX port and no browser demo, neither in scope
-for 0.1.0. No user guide.
+been seen on a synthetic test card, never on footage. On Windows, v0.1.0's CI build passed the fleet Arena gate 9 of 9 on win-lab (Resolume Arena 7.27.1, Mesa llvmpipe, no GPU, 2026-09-24): it loads from Extra Effects, registers as `SW Toolpath` / `TP01` / effect, all 31 host controls match the declaration, it renders and Arena's log stays clean. Some controls were inconclusive at the gate's thumbnail size, a different set in each of two runs; `tools/sweep.py` proves every one live. Software rendering says nothing about a GPU or about speed. No OpenFX port and no browser demo, neither in scope
+for 0.1.0. There is a [user guide](https://stoatworks-labs.com/software/toolpath/guide/).
 
 ## Build
 
