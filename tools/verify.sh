@@ -12,6 +12,12 @@
 #                 only build worth measuring is one configured from nothing.
 #   shaders       does every shader compile, through a real GLSL compiler
 #                 (tools/check-shaders.sh, which CI runs too).
+#   demo          the browser demo's copies of those shaders are still the
+#                 plugin's, character for character. demo/plugin.js carries
+#                 its own copy of every piece Shaders.cpp assembles from, and
+#                 two copies drift quietly: the plugin keeps working, the page
+#                 keeps working, and they stop being the same effect. Nothing
+#                 else in this file looks at the page at all.
 #   offline       the checks that need no GL -- what CI runs on a runner with
 #                 no GPU:
 #                   --names     nothing the host will silently truncate
@@ -84,6 +90,27 @@ if out=$(tools/check-shaders.sh "$TPTEST" 2>&1); then
 else
 	fail "tools/check-shaders.sh"
 	printf '%s\n' "$out" | sed 's/^/      /'
+fi
+
+#---------------------------------------------------------------------------
+# The browser demo's copy of the same GLSL.
+#
+# `demo/plugin.js` cannot include a C++ file, so it carries its own copy of
+# kVersion and the ten bodies. This compares them character for character --
+# reformatting counts, deliberately, because "it is only whitespace" is how a
+# real change gets waved through. It says nothing about the demo's PORT of the
+# tracer and planner; only a reader can check that.
+#---------------------------------------------------------------------------
+step "demo: the browser copy of the shaders"
+if [ -f demo/tools/check_shaders.py ]; then
+	if out=$(python3 demo/tools/check_shaders.py 2>&1); then
+		pass "$( printf '%s\n' "$out" | tail -1 )"
+	else
+		fail "the demo's shaders have drifted from source/Shaders.cpp"
+		printf '%s\n' "$out" | grep -v '^ok' | sed 's/^/      /'
+	fi
+else
+	printf '   skipped: no demo/\n'
 fi
 
 step "offline (no GL)"

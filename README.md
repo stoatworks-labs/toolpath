@@ -146,8 +146,11 @@ headless CGL context, plus an `oxbow` load. How 25 controls in five groups
 present in Arena's inspector, what Resolume's clock does to Latch across a clip
 retrigger, and whether a Live job at 4K keeps up inside Resolume's own frame are
 untested. The look has only
-been seen on a synthetic test card, never on footage. On Windows, v0.1.0's CI build passed the fleet Arena gate 9 of 9 on win-lab (Resolume Arena 7.27.1, Mesa llvmpipe, no GPU, 2026-09-24): it loads from Extra Effects, registers as `SW Toolpath` / `TP01` / effect, all 31 host controls match the declaration, it renders and Arena's log stays clean. Some controls were inconclusive at the gate's thumbnail size, a different set in each of two runs; `tools/sweep.py` proves every one live. Software rendering says nothing about a GPU or about speed. No OpenFX port and no browser demo, neither in scope
+been seen on a synthetic test card, never on footage. On Windows, v0.1.0's CI build passed the fleet Arena gate 9 of 9 on win-lab (Resolume Arena 7.27.1, Mesa llvmpipe, no GPU, 2026-09-24): it loads from Extra Effects, registers as `SW Toolpath` / `TP01` / effect, all 31 host controls match the declaration, it renders and Arena's log stays clean. Some controls were inconclusive at the gate's thumbnail size, a different set in each of two runs; `tools/sweep.py` proves every one live. Software rendering says nothing about a GPU or about speed. No OpenFX port, not in scope
 for 0.1.0. There is a [user guide](https://stoatworks-labs.com/software/toolpath/guide/).
+The [browser demo](https://toolpath-demo.stoatworks-labs.com/) runs the plugin's
+own shaders, but its tracer and path planner are a hand port to JavaScript, and
+nothing checks a port but a reader.
 
 ## Build
 

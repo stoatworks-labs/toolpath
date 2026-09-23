@@ -90,6 +90,8 @@ The pipeline:
 | `tools/sweep.py` | No control is silently dead. |
 | `tools/check-shaders.sh` | glslc over the dumped shaders, for verify.sh and CI alike. |
 | `tools/verify.sh` | All of it, at two rasters, plus the release-time checks done locally. |
+| `demo/` | The browser demo. `plugin.js` holds a copy of every shader piece and a PORT of the CPU half; `vendor/` is the shared kit, not edited here. |
+| `demo/tools/check_shaders.py` | The demo's shader copies have not drifted (run by `verify.sh`). |
 
 Per frame: **detect → [blur ×2] → seed → flood ×N → resolve**, all on the lattice
 (only when a region is grabbed: every frame in Live, once per job in Latch) →
@@ -371,6 +373,66 @@ and `--fillet`.
 
 ---
 
+## The browser demo
+
+`demo/` is the page at **toolpath-demo.stoatworks-labs.com**, a static-assets Worker
+(`wrangler.toml`, no build step). Added 2026-09-24, after 0.1.0, from galvo's page.
+
+**This plugin is not only a shader, so the page is two things.** The GPU half is the
+plugin's own GLSL: `kVersion` and the ten bodies in `Shaders.cpp` are copied into
+`demo/plugin.js` unedited and assembled the way `assemble()` does it, and
+`demo/tools/check_shaders.py` (run by `verify.sh`, step "demo") fails if a character
+of any of the eleven pieces drifts — it also fails if Shaders.cpp grows a piece the
+check does not list. The CPU half — `Path.cpp` whole, `Controls.cpp`, and
+computeField's flood schedule, buildPath, stamp and ProcessOpenGL's Latch/Live from
+`Toolpath.cpp` — is **ported to JavaScript function for function**, because without
+it there is no toolpath to show. **Nothing checks that port but a reader.** Change
+any of those and change `plugin.js` by hand to match; a wrong port shows up as a
+toolpath subtly the wrong shape, which nobody will notice.
+
+It was cross-checked once, when written: the exact R32F grid the page read back
+(exposed on `window.__toolpath.telemetry.lastGrid` for this purpose) was fed to the
+real `Path.cpp` in a scratch harness — `TraceLevels`, `SimplifyLoop( 0.2 )`, `Order`
+— on three jobs (the default bars job, 18 levels; Inside Out at stepover 0.8, 4
+levels; the spot clip, 12 levels). Loops, points before and after simplification,
+path vertices, cut length, duration and the sum of every coordinate agreed
+**bit-exactly** (default job: 24 loops, 126 vertices, 20958.721591144145 px of
+cutting). Keys are uint64 in the C++ and doubles in JS, exact below 2^53; the
+controls are rounded through `Math.fround` where the C++ computes in `float`, which
+is what made the radius and stepover identical. The JS trace costs 12–46 ms on a
+960×540 grid in node on the M4 Max; headless SwiftShader reports 1–4 s for
+"readback and trace" because the software rasteriser's backlog lands on the
+`readPixels` stall.
+
+What the page does differently, each forced and each said on the page:
+
+- **The readback.** The plugin reads the R32F trace grid as `GL_RED`/`GL_FLOAT`.
+  WebGL2 guarantees only `RGBA`/`FLOAT`, so the page asks
+  `IMPLEMENTATION_COLOR_READ_FORMAT` and reads RED when offered (headless Chrome's SwiftShader did)
+  and four floats a sample otherwise. Same floats. Unlike galvo, nothing drops to
+  RGBA8: toolpath reads floats, which WebGL2 can do, not bytes of a float target.
+- **Needs** `EXT_color_buffer_float` (R16F and R32F targets, MAX blending into the
+  R16F cut) and `OES_texture_float_linear` (the field is sampled bilinearly). The
+  page refuses by name without either rather than rendering a flat field.
+- **Restart** is FF_TYPE_EVENT; the kit has no event type, so it is a toggle the
+  renderer releases (readout's pattern). **The clock** is the page's, in seconds, so
+  readout's unit voting is not ported; the 0.25 s frame cap is. **No audio caveat**:
+  toolpath has no audio path. **The About block is absent**, as on every page.
+- **The integer uniforms** go through `setInt` and the three ivec2 ones through
+  `gl.uniform2i` directly — the kit's `set()` would upload a float and GL would refuse
+  it silently.
+
+Decided without asking: **the clip list starts on the 75% colour bars** (two clean
+rectangular pockets, eight inside corners, every fillet visible at the default
+Luma 0.5; the repository's own test card is not a kit clip and the kit is not edited
+per repo). **The presets are the page's own** (the plugin ships none). **Latch is
+kept faithful**: region controls and a clip switch do nothing until Restart, as in
+the plugin, and the hints say so rather than the page re-grabbing behind the
+operator's back. A **stats line** under the canvas reports passes, loops, cut length,
+job time at this feed, progress and the readback-and-trace cost.
+
+---
+
 ## Decisions taken without asking
 
 - **Lengths in frame heights.** Tool Diameter 1–25% of the height, Feed 0.05–8
@@ -426,7 +488,8 @@ and `--fillet`.
 - **Colour triples** (`Stock Colour`, `Path Colour`) as FF_TYPE_RED/GREEN/BLUE so a
   host can show a swatch, with ≤ 16-character member names.
 - **Restart is an event** (FF_TYPE_EVENT): a press is remembered until the next frame.
-- **No factory presets, no OpenFX, no browser demo** (not required for 0.1.0).
+- **No factory presets, no OpenFX** (not required for 0.1.0). The browser demo came
+  after the release; see "The browser demo" above.
 - **Test hooks live in the shipped plugin** (the `Perturb` bits, the `...ForTest`
   readers), always inert: the negative controls must perturb the plugin, not the
   harness's expectation.
@@ -524,7 +587,10 @@ build, at 320×180 and 1280×720, with the same checks passing at 640×480, 333�
 - **The clock-unit voting** is readout's, which has met Arena; this plugin has not.
 - **Windows has only met Arena on software rendering**: v0.1.0's CI build in the
   fleet gate on win-lab (Arena 7.27.1, llvmpipe). See the README's status.
-- **No OpenFX port and no browser demo.** Not required for 0.1.0.
+- **No OpenFX port.** Not required for 0.1.0.
+- **The browser demo's CPU half is a port** that only a reader checks; `verify.sh`
+  checks the demo's shader copies, not the port. Cross-checked once, 2026-09-24,
+  bit-exact against `Path.cpp` on three grids; not re-checked since.
 - **The provisional About headers and ATTRIBUTIONS** are hand copies (above).
 - **Nothing has been through a show.**
 
