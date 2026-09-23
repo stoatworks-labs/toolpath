@@ -794,20 +794,29 @@ std::vector< double > exactField( const std::vector< uint8_t >& inside, int widt
 //                   EXACT to the GPU's sqrt: 6 ULP of the distance (GLSL
 //                   4.10 section 4.7.1: sqrt is inherited from 1/inversesqrt,
 //                   2 + 2.5 ULP, and the half-pixel subtraction rounds once).
-//   disc, ring,     curved, and the blobs any shape. The flood errs where a
-//   star, blobs     Voronoi cell is thinner than the jump that should reach
-//                   it; on one digitised boundary that is the medial axis,
-//                   where every competitor is a boundary pixel of the same
-//                   curve, so its distance is within the digitisation step --
-//                   ONE PIXEL -- of the true nearest.
-//   constellation   the known bad case: nine one-pixel islands, sparse seeds,
-//                   Rong & Tan's configuration. The competitor there can be
-//                   anywhere; plain JFA misses by 2.7 px at 320x180 and 12 px
-//                   at 1280x720. The 1+JFA prepass is what repairs it, and
-//                   the bound is the same pixel.
+//   disc, ring,     curved. JFA has no error bound in general; its known
+//   star, blobs     failure on a digitised boundary is the thin Voronoi wedge
+//                   along the medial axis, where a pixel is left holding the
+//                   seed of a NEIGHBOURING cell. Neighbouring seeds on a
+//                   digitised boundary are 8-neighbours, at most sqrt2 apart,
+//                   so by the triangle inequality the distance is at most
+//                   SQRT2 too long. That is the bound, and it is only true if
+//                   the flood's surviving errors are of that kind: with only
+//                   the 2, 1 finish they were not (a 4K disc 2.4 px out, a
+//                   star 3.3), which is why the finish grows with the raster.
+//   constellation   the known bad case: four one-pixel islands, sparse seeds,
+//                   Rong & Tan's configuration, where the competitor can be
+//                   any seed at all. Without the 1+ prepass the flood misses
+//                   by 5.7 px at 320x180 and 23 px at 1280x720, finish and
+//                   all; the prepass is what repairs it, to the same sqrt2
+//                   (in fact exactly). It is drawn and
+//                   flooded at its own raster, 320x180 x 2^k -- the largest
+//                   that fits -- because the configuration and its failure
+//                   are properties of that lattice: at 333x187 plain JFA gets
+//                   it right.
 //
 // Reported with and without the corrections. The negative control skips the
-// prepass and the constellation must break the pixel.
+// prepass and the constellation must break the bound.
 //---------------------------------------------------------------------------
 struct Shape
 {
@@ -816,11 +825,10 @@ struct Shape
 	std::function< bool( double x, double y ) > inside;//pixel centre, GL
 };
 
-/// The largest power of two k with 320k <= width and 180k <= height, the
-/// scale the constellation is drawn at. The flood's jump sequence scales by
-/// k exactly when the raster's longer side does, so the configuration and
-/// its failure are the same at every such raster (and embedded in a larger
-/// one, the extra jumps land on nothing).
+/// The largest power of two k with 320k <= width and 180k <= height: the
+/// constellation is drawn and flooded at 320k x 180k. The flood's jump
+/// sequence scales by k exactly with the raster, so the configuration and
+/// its failure are the same at every such raster -- and only there.
 int constellationScale( int width, int height )
 {
 	int k = 1;
@@ -829,11 +837,14 @@ int constellationScale( int width, int height )
 	return k;
 }
 
-/// The nine islands, in pixels of a 320x180 raster, (x, y) with y up. Found
-/// by searching random sparse constellations for one the plain flood gets
-/// wrong and 1+JFA gets exactly right; it is a fixture, not a tolerance.
-const int kConstellation[ 9 ][ 2 ] = {
-	{ 197, 151 }, { 130, 106 }, { 280, 159 }, { 296, 143 }, { 5, 158 }, { 1, 7 }, { 17, 60 }, { 112, 107 }, { 292, 79 },
+/// The four islands, in pixels of a 320x180 raster, (x, y) with y up. Found
+/// by searching random sparse constellations (a numpy model of this flood,
+/// in the session that wrote it) for one that the flood without its 1+
+/// prepass gets badly wrong at both 320x180 and 1280x720, and the full flood
+/// gets exactly right. It is a fixture, not a tolerance: the plugin's own
+/// shaders are what the check runs on it.
+const int kConstellation[ 4 ][ 2 ] = {
+	{ 133, 84 }, { 306, 123 }, { 285, 73 }, { 85, 164 },
 };
 
 std::vector< Shape > distanceShapes( int width, int height )
@@ -930,7 +941,7 @@ bool fieldError( int width, int height, const std::vector< uint8_t >& mask, cons
 		if( exact[ i ] <= -1.0e5 )
 			continue;//no region at all: nothing to be a distance to
 		const double e = std::fabs( static_cast< double >( field[ i ] ) - exact[ i ] );
-		const double bound = exactShape ? 6.0 * ulp( std::max( std::fabs( exact[ i ] ) + 0.5, 1.0 ) ) : 1.0;
+		const double bound = exactShape ? 6.0 * ulp( std::max( std::fabs( exact[ i ] ) + 0.5, 1.0 ) ) : std::sqrt( 2.0 );
 		if( e > bound )
 			++result.overBound;
 		result.max = std::max( result.max, e );
@@ -945,8 +956,17 @@ bool fieldError( int width, int height, const std::vector< uint8_t >& mask, cons
 int runDistance( int width, int height, int perturb, bool quiet = false )
 {
 	int failures = 0;
-	for( const Shape& shape : distanceShapes( width, height ) )
+	const int fullWidth = width, fullHeight = height;
+	for( const Shape& shape : distanceShapes( fullWidth, fullHeight ) )
 	{
+		width  = fullWidth;
+		height = fullHeight;
+		if( std::strcmp( shape.name, "constellation" ) == 0 )
+		{
+			const int k = constellationScale( fullWidth, fullHeight );
+			width       = 320 * k;
+			height      = 180 * k;
+		}
 		std::vector< uint8_t > mask( static_cast< size_t >( width ) * height );
 		for( int y = 0; y < height; ++y )
 			for( int x = 0; x < width; ++x )
@@ -971,7 +991,7 @@ int runDistance( int width, int height, int perturb, bool quiet = false )
 		std::printf( "distance %-13s max %.4f rms %.2e  | no prepass max %.4f rms %.2e | plain JFA max %.4f rms %.2e"
 		             "  bound %s  %s\n",
 		             shape.name, full.max, full.rms, noPrepass.max, noPrepass.rms, plain.max, plain.rms,
-		             shape.exact ? "6 ULP" : "1 px ", verdict( full.ok ) );
+		             shape.exact ? "6 ULP" : "sqrt2", verdict( full.ok ) );
 	}
 	if( !quiet )
 		std::printf( "distance: %s\n", failures == 0 ? "the flooded field is the exact EDT within its bound on every shape"

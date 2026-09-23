@@ -345,10 +345,15 @@ bool Toolpath::computeField( const FFGLTextureStruct& input, int width, int heig
 	seedShader.Set( "Invert", params[ PT_INVERT ] > 0.5f ? 1 : 0 );
 	quad.Draw();
 
-	//4. flood: 1 + JFA + 2. The steps run from the largest power of two
-	//below the raster's longer side down to 1; the prepass and the two
-	//finishing passes are the published variants (Rong & Tan 2006) that
-	//repair the flood's known failures.
+	//4. flood. A step-1 pass first (the "1+" of 1+JFA, Rong & Tan 2006:
+	//it repairs the flood's failure on sparse seeds -- see the constellation
+	//in tptest --distance), then the halving sequence from the largest
+	//power of two under the longer side, then a finishing run of halving
+	//steps again from 1/128 of it (at least 2, 1: the "+2" of JFA+2). The
+	//finish is what keeps a curved boundary's medial axis within a pixel
+	//diagonal of exact at 4K: with only 2, 1 the thin Voronoi wedges there
+	//took seeds 2.4 px (a disc) and 3.3 px (a star) too far, and the error
+	//grows with the raster, so the finish does too.
 	std::vector< int > steps;
 	if( !( perturb & kPerturbNoPrepass ) )
 		steps.push_back( 1 );
@@ -358,10 +363,8 @@ bool Toolpath::computeField( const FFGLTextureStruct& input, int width, int heig
 	for( int step = longest / 2; step >= 1; step /= 2 )
 		steps.push_back( step );
 	if( !( perturb & kPerturbNoFinish ) )
-	{
-		steps.push_back( 2 );
-		steps.push_back( 1 );
-	}
+		for( int step = std::max( 2, longest / 128 ); step >= 1; step /= 2 )
+			steps.push_back( step );
 
 	glUseProgram( floodShader.GetGLID() );
 	floodShader.Set( "Seeds", 0 );

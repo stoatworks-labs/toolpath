@@ -103,7 +103,7 @@ public:
 	{
 		kPerturbSquareTool     = 1 << 0,///< the stamp cuts a square (GLSL bit 1)
 		kPerturbNoPrepass      = 1 << 1,///< skip the step-1 pass before the flood
-		kPerturbNoFinish       = 1 << 2,///< skip the steps 2 and 1 after it
+		kPerturbNoFinish       = 1 << 2,///< skip the finishing steps after it
 		kPerturbFirstLevelHalf = 1 << 3,///< the first pass at r / 2: the tool gouges the wall
 		kPerturbStepoverRadius = 1 << 4,///< stepover read as radii, not diameters
 		kPerturbFeedPerFrame   = 1 << 5,///< the tool advances Feed / 60 a frame, whatever dt is

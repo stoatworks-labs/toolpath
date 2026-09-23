@@ -337,20 +337,24 @@ float cutAt( vec2 at )
 	return texture( Cut, at ).r;
 }
 
-//The field in OUTPUT pixels, and its gradient (a unit vector where the
-//field is a distance), by central differences one job texel apart.
+//The field in OUTPUT pixels.
 float fieldAt( vec2 at )
 {
 	return texture( Field, at ).r * ( OutSize.y / JobSize.y );
 }
 
-vec2 fieldGradient( vec2 at )
+//The field's gradient, a unit vector where the field is a distance, by
+//central differences `span` job pixels apart. Not one texel: a distance to a
+//DIGITISED boundary has a gradient that swings by the staircase of the
+//pixels it was measured to, and lit one texel apart that shows as a
+//sunburst of hairlines round every curve.
+vec2 fieldGradient( vec2 at, float span )
 {
-	vec2 texel = 1.0 / JobSize;
-	float dx   = texture( Field, at + vec2( texel.x, 0.0 ) ).r - texture( Field, at - vec2( texel.x, 0.0 ) ).r;
-	float dy   = texture( Field, at + vec2( 0.0, texel.y ) ).r - texture( Field, at - vec2( 0.0, texel.y ) ).r;
-	vec2 g     = vec2( dx, dy ) * 0.5;
-	float m    = length( g );
+	vec2 h   = max( span, 1.0 ) / JobSize;
+	float dx = texture( Field, at + vec2( h.x, 0.0 ) ).r - texture( Field, at - vec2( h.x, 0.0 ) ).r;
+	float dy = texture( Field, at + vec2( 0.0, h.y ) ).r - texture( Field, at - vec2( 0.0, h.y ) ).r;
+	vec2 g   = vec2( dx, dy );
+	float m  = length( g );
 	return m > 1.0e-4 ? g / m : vec2( 0.0 );
 }
 
@@ -391,7 +395,7 @@ void main()
 			float u      = clamp( ( d - Offset ) / max( Band, 1.0e-3 ), 0.0, 1.0 );
 			float k      = 1.0 + 3.0 * Falloff;
 			float slope  = ( d > Offset && d < Offset + Band ) ? k * pow( 1.0 - u, k - 1.0 ) : 0.0;
-			float shade  = Depth * 0.5 * slope * dot( fieldGradient( uv ), LightDir );
+			float shade  = Depth * 0.5 * slope * dot( fieldGradient( uv, 0.25 * Band * JobSize.y / OutSize.y ), LightDir );
 			rgb          = clip.rgb * ( 1.0 + shade ) + vec3( max( shade, 0.0 ) * 0.25 );
 		}
 		else
@@ -423,7 +427,7 @@ void main()
 			//bevel, lit by the distance field's gradient.
 			float fromWall = texture( Field, uv ).r;
 			float bevel    = cut * ( 1.0 - clamp( fromWall / max( ToolRadius * 2.0, 1.0 ), 0.0, 1.0 ) );
-			float lit      = dot( fieldGradient( uv ), LightDir );
+			float lit      = dot( fieldGradient( uv, 0.25 * ToolRadius ), LightDir );
 			rgb = clip.rgb * ( 1.0 - 0.45 * Depth * cut ) + vec3( 1.2 * Depth * wall * cut ) + clip.rgb * ( 0.6 * Depth * bevel * lit );
 		}
 		else
