@@ -77,6 +77,11 @@ ENGRAVE = {"Mode": 1}
 FIELD = {"Mode": 3}
 CONTEXT = {
     "Detect On": {"_high": 2},
+    # Smooth moves the pocket's walls by a pixel or two. At 160x90 (CI's
+    # sweep raster) the tool has not reached a wall in 90 frames of Reveal, so
+    # the cut is the same either way; the preview draws every pass, walls
+    # included, and shows it.
+    "Smooth": PATHS,
     "Stepover": PATHS,
     "Strategy": PATHS,
     "Path Colour": PATHS,
