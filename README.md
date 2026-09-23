@@ -4,14 +4,15 @@
 > (Anthropic), directed and reviewed by a human author. The machining is not
 > asserted but measured: an offline harness drives the real plugin class in a
 > headless GL context and reads each claim back out of the plugin's own field or
-> out of the picture — the jump-flooded distance field is exact to 6 ULP on
-> rectilinear shapes and within √2 px of an exact Euclidean distance transform on
-> curved ones, a square pocket's inside corners keep a fillet whose radius reads
-> back within 0.02 px of the tool's, a slot 2 px narrower than the tool is never
-> entered and one 2 px wider is cut end to end, a stepover past the tool's
-> diameter leaves ridges s − 2r wide to within 0.15 px, and the tool covers
-> exactly Feed pixels of path a second at 60 and at 30 fps — with seven negative
-> controls that prove each check can fail. It has **never been loaded into
+> out of the picture — the jump-flooded distance field, computed on a lattice of
+> two pixels a texel, is exact to 6 ULP on rectilinear shapes and within √2
+> texels (2.83 px) of an exact Euclidean distance transform on curved ones, a
+> square pocket's inside corners keep a fillet whose radius reads back within
+> 0.02 px of the tool's, a slot 2 px narrower than the tool is never entered and
+> one 5 px wider is cut end to end, a stepover past the tool's diameter leaves
+> ridges s − 2r wide to within 0.15 px, and the tool covers exactly Feed pixels
+> of path a second at 60 and at 30 fps — with eight negative controls that prove
+> each check can fail, one of them that the reduced field is the one in use. It has **never been loaded into
 > Resolume**. It is loaded by [oxbow](https://github.com/stoatworks-labs/oxbow),
 > which is a real FFGL host and is not Resolume. See [Status](#status).
 
@@ -62,12 +63,16 @@ The same field gives a glow, a bevel and an outline at a distance for free:
 
 ### The honest limit
 
-The pocket is a threshold of the picture, so its walls are pixel steps, and the
-field is measured between pixel centres. The flood is not an exact distance
-transform: it is exact on straight walls and within √2 px on curves, and it is
-computed at the full raster, which at 4K costs 11 ms. The trace is on a grid of
-at most 1280 samples across, so above 1280 wide a pass is placed to within one
-sample of a coarser grid. There is one tool, one depth, no ramping or plunging,
+The pocket is a threshold of the picture taken on a lattice of **two pixels a
+texel**: a texel is pocket when more than half of its 2×2 block is. So its walls
+are two-pixel steps, a wall that falls half way across a block moves a pixel in
+(never out), and anything narrower than the lattice — a one-pixel line, a single
+pixel — is not seen at all. The field is measured between texel centres, and the
+flood is not an exact distance transform: it is exact on straight walls and
+within √2 texels (2.83 px) on curves. Computing it on that lattice rather than
+the full raster is what takes Live at 4K from 16 ms a frame to 9. The trace is
+on a grid of at most 1280 samples across, so above 1280 wide a pass is placed to
+within one sample of a coarser grid. There is one tool, one depth, no ramping or plunging,
 no climb-or-conventional choice, and no finishing pass along the medial axis, so
 a pocket whose last pass falls short of its middle keeps an island there, as a
 real job without a cleanup pass would.
@@ -99,14 +104,15 @@ universal Release build, running every check at **two rasters**, 320×180 and
 
 | check | result |
 | --- | --- |
-| `--distance` | against an exact EDT of the same mask: a square and the bare frame **exact** (6 ULP); a disc, ring, star and blobs within **0.36 px** at 720p, **0.47** at 1080p, **0.91** at 4K, against a bound of √2; the known bad case, four one-pixel islands, **exact** — and **23 px** out without the 1+JFA prepass |
+| `--distance` | against an exact EDT of the mask on the field's lattice (two pixels a texel): a square and the bare frame **exact** (6 ULP); a disc, ring, star and blobs within **0.58 px** at 720p, **0.59** at 1080p, **1.05** at 4K (0.53 texels), against a bound of √2 texels, 2.83 px; the known bad case, four one-texel islands, **exact** — and **23 px** out without the 1+JFA prepass |
+| `--lattice` | the field is half the raster each way, and its sign at every pixel is the 2×2 majority's, on a fixture where the full-raster mask differs at 823 pixels (320×180) and 3,301 (1280×720) |
 | `--fillet` | a square pocket's four inside corners: fillet radius **8.981** for r = 9 (320×180) and **36.002** for r = 36 (1280×720), every boundary point within 0.06 px of that circle |
-| `--slot` | a slot 2 px narrower than the tool: **0** pixels cut beyond the tool's reach from its mouth; 2 px wider: its centre row cut from mouth to end |
+| `--slot` | a slot 2 px narrower than the tool: **0** pixels cut beyond the tool's reach from its mouth; 5 px wider (the lattice can take 2 px off its peak, and half a pixel is kept over that): its centre row cut from mouth to end |
 | `--scallop` | at stepovers of 1.25, 1.5 and 2 diameters the ridges are s − 2r wide to within **0.15 px** (tolerance 0.25); at 0.5 and exactly 1 diameter there are none |
 | `--feed` | **90.000000 px/s** for Feed = 90 px/s, at 60 and at 30 fps, error 1e-14; the tool's ring in the picture within 0.05 px of where the tool is |
 | `--latch` | Restart leaves one frame's cut (364 pixels against a bound of 434); a resize to twice the raster keeps every fully cut pixel cut |
-| `--negative` | seven perturbed plugins — no prepass, a square tool, the first pass at r/2, the stepover read in radii, a feed per frame, a resize that re-grabs, a Restart that keeps the cut — each **fails** its check |
-| mutation | one character of the shipped GLSL (`- 0.5` → `+ 0.5` in the field's resolve pass) was caught by `--distance` and `--fillet`, then reverted |
+| `--negative` | eight perturbed plugins — no prepass, a square tool, the first pass at r/2, the stepover read in radii, a feed per frame, a resize that re-grabs, a Restart that keeps the cut, the field at the full raster — each **fails** its check |
+| mutation | one character of the shipped GLSL (`- 0.5` → `+ 0.5` in the field's resolve pass) was caught by `--distance`, `--fillet` and (at 320×180) `--slot`, then reverted |
 | `--offline` | the parameter names, the reference EDT against brute force (0 of 41,795 pixels disagree), the tracer on analytic fields and its two negative controls, with no GL |
 | `tools/sweep.py` | all **25** controls measurably change the picture |
 | shaders | all 10, as the plugin assembles them, compile through `glslc` |
@@ -114,17 +120,23 @@ universal Release build, running every check at **two rasters**, 320×180 and
 | the bundle | universal (`x86_64 arm64`), exports `plugMain`, ad-hoc signs; `oxbow` reports `SW Toolpath` / `TP01` / `effect` and renders 120 frames through `plugMain` |
 
 Render cost at the defaults on the test card, best of three runs of 60 frames
-after a warm-up, `glFinish` both sides, on a GPU shared with other work:
+after a warm-up, `glFinish` both sides, on a GPU shared with other work — one
+run of `tptest --bench-4k`, with the field on its lattice of two pixels a texel:
 
 | | Latch | Live | the field | trace and order (CPU) |
 | --- | --- | --- | --- | --- |
-| 1280×720 | 0.07 ms | 7.0 ms | 1.8 ms | 4.4 ms |
-| 1920×1080 | 0.10 ms | 7.4 ms | 2.3 ms | 4.6 ms |
-| 3840×2160 | 0.16 ms | 16.2 ms | 10.8 ms | 4.9 ms |
+| 1280×720 | 0.08 ms | 6.5 ms | 1.8 ms | 4.6 ms |
+| 1920×1080 | 0.12 ms | 7.3 ms | 2.6 ms | 4.5 ms |
+| 3840×2160 | 0.16 ms | **9.0 ms** | **2.9 ms** | 4.7 ms |
 
-Latch pays for the field and the trace once, when a job is grabbed; after that a
-frame is a few capsules and a composite. Live pays for both every frame, and at
-4K that is the whole of a 60 fps frame. macOS figures only.
+With the field at the full raster, earlier the same day: Live 7.0, 7.4 and
+**16.2 ms**, the field 1.8, 2.3 and **10.8 ms**. Latch pays for the field and the
+trace once, when a job is grabbed; after that a frame is a few capsules and a
+composite. Live pays for both every frame; at 4K that was the whole of a 60 fps
+frame and is now a little over half of one. At 720p and 1080p the lattice buys
+nothing measurable — the field there is the cost of twenty-odd passes, not of
+their pixels — and the CPU trace is now the larger share of Live at every
+raster. macOS figures only.
 
 ### Not established
 
@@ -132,7 +144,8 @@ It has **never been loaded into Resolume**, on either platform. Everything above
 was compiled, rendered and measured offline against the real plugin class in a
 headless CGL context, plus an `oxbow` load. How 25 controls in five groups
 present in Arena's inspector, what Resolume's clock does to Latch across a clip
-retrigger, and whether a Live job at 4K keeps up are untested. The look has only
+retrigger, and whether a Live job at 4K keeps up inside Resolume's own frame are
+untested. The look has only
 been seen on a synthetic test card, never on footage. The Windows build is
 CI-only and has never run. No OpenFX port and no browser demo, neither in scope
 for 0.1.0. No user guide.
@@ -161,10 +174,10 @@ clock:
 ./build/tptest --out /tmp/frame.png --size 1920x1080   # the test card
 ./build/tptest --list                                  # every control, kind and default
 ./build/tptest --distance --fillet --slot              # each claim, measured
-./build/tptest --scallop --feed --latch
+./build/tptest --scallop --feed --latch --lattice
 ./build/tptest --negative                              # and the checks can fail
 ./build/tptest --offline                               # the checks that need no GL
-./build/tptest --bench                                 # 720p and 1080p, Latch and Live
+./build/tptest --bench                                 # 720p and 1080p, Latch and Live (--bench-4k: once)
 python3 tools/sweep.py                                 # no control is silently dead
 tools/verify.sh                                        # all of it, on a fresh universal build
 ```

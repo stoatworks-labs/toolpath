@@ -44,14 +44,18 @@ The pipeline:
 
 1. **Region.** Detect On (tinsel's luma, alpha, chroma, luma-or-alpha), an optional
    Gaussian (`Smooth`), `Threshold`, `Invert`. A pixel is inside or it is not.
-2. **Field.** A jump flood carrying both seeds — each pixel's nearest outside pixel
-   and nearest inside pixel — then a resolve: inside, the distance to the nearest
-   outside pixel centre (or to the frame's edge, which is a wall) less half a pixel;
-   outside, minus the same. So a straight wall sits half way between the last inside
-   centre and the first outside one, and the field is exactly the distance to it.
-3. **Toolpath.** The field sampled onto a trace grid (one sample a pixel up to 1280
-   wide), read back, traced by marching squares at every level in one pass over the
-   cells, corners put back, simplified to 0.2 px, and ordered one pocket at a time.
+2. **Field**, on the **working lattice**: `kFieldScale` = 2 job pixels a texel, at
+   every raster. Detect averages each 2×2 block, so after the threshold a texel is
+   inside when more than half its block is. A jump flood carrying both seeds — each
+   texel's nearest outside texel and nearest inside texel — then a resolve: inside,
+   the distance to the nearest outside texel centre less half a texel, times 2 into
+   job pixels (or the distance to the job frame's edge, which is a wall); outside,
+   minus the same. So a straight wall sits half way between the last inside centre
+   and the first outside one, and the field is exactly the distance to it.
+3. **Toolpath.** The field sampled bilinearly onto a trace grid (one sample a job
+   pixel up to 1280 wide), read back, traced by marching squares at every level in
+   one pass over the cells, corners put back (looking a texel out, not a cell),
+   simplified to 0.2 px, and ordered one pocket at a time.
 4. **Machine.** The tool advances along the path at Feed (Latch) or sweeps its prefix
    (Live), and every piece it covers is stamped into the cut buffer as a capsule of
    radius r, MAX-blended, its coverage a one-pixel ramp centred on r.
@@ -87,8 +91,9 @@ The pipeline:
 | `tools/check-shaders.sh` | glslc over the dumped shaders, for verify.sh and CI alike. |
 | `tools/verify.sh` | All of it, at two rasters, plus the release-time checks done locally. |
 
-Per frame: **detect → [blur ×2] → seed → flood ×N → resolve** (only when a region is
-grabbed: every frame in Live, once per job in Latch) → **sample + readback + trace +
+Per frame: **detect → [blur ×2] → seed → flood ×N → resolve**, all on the lattice
+(only when a region is grabbed: every frame in Live, once per job in Latch) →
+**sample + readback + trace +
 order** (when the job or the tool changes) → **stamp** (the new pieces in Latch, the
 whole prefix in Live) → **overlay** (lines and the tool) → **composite** to the host.
 
@@ -117,6 +122,9 @@ is now a second run of halving steps from 1/128 of the longest side (4, 2, 1 at
 180p; 16 … 1 at 720p and 1080p; 32 … 1 at 4K), the bound is √2, and the worst
 measured is 0.91 px (a disc at 4K). A check at two rasters would not have found
 this: run the physics by hand at 1080p before believing a bound that grows nowhere.
+(All of this was at the full raster. The field is now on a lattice of two pixels,
+the same argument holds texel for texel, and the bound is √2 texels, 2.83 px; the
+finish is 1/128 of the lattice's side, and the worst measured is 0.53 texels.)
 
 ### ☠️ Lengthening the flood made the known bad case benign
 
@@ -132,9 +140,12 @@ the other.
 
 The constellation is bad at 320×180 × 2^k, where the jump sequence scales with it,
 and nowhere else in particular: embedded in 333×187, the flood without its prepass
-got it exactly right. It is flooded at its own lattice — the largest 320×180 × 2^k
-that fits the requested raster — so it is the known bad case at every raster the
-check is asked for.
+got it exactly right. It is flooded at its own lattice — the largest 320×180 × 2^j
+of FIELD TEXELS that fits the requested raster — so it is the known bad case at
+every raster the check is asked for. Since the field moved onto a lattice of two
+pixels, each island is drawn as a 2×2 block (one texel), and the job raster is
+twice the lattice: at a requested 320×180 the constellation renders at 640×360,
+the smallest raster whose lattice is 320×180.
 
 ### ☠️ Marching squares cuts every corner of every pass
 
@@ -159,12 +170,38 @@ and framebuffer, picks the upload format from the internal format, and saves and
 restores the bindings it disturbs by hand (the `ffglex::Scoped*` bindings clear to 0
 on exit instead of restoring).
 
-### ☠️ The flood costs 11 ms at 4K
+### ☠️ The flood cost 11 ms at 4K, so it moved onto a lattice of two pixels
 
-Twenty passes of RGBA16UI at 3840×2160. Latch pays it once per job; Live pays it
-every frame, and with the trace that is 16 ms — a whole 60 fps frame. It is
-full-resolution on purpose (every check measures the plugin at the raster it
-renders), and a stated-fraction field is the obvious lever if Live at 4K matters.
+Twenty passes of RGBA16UI at 3840×2160: 10.8 ms of Live's 16.2 at 4K, a whole
+60 fps frame. The field is now computed on a lattice of `kFieldScale` = 2 job
+pixels a texel, **at every raster** — 2.9 ms of 9.0 at 4K. Not a cap: a cap at
+1080 or 720 lines would leave 320×180 and 1280×720 at full resolution, and every
+check in `verify.sh` measuring code 4K never runs. With a fixed 2, both verify
+rasters run exactly what ships at 4K, and every tolerance was re-derived for it
+(the table below) rather than widened until it passed. At 720p and 1080p it buys
+nothing measurable: the field there costs ~20 passes' overhead, not their pixels.
+
+What the lattice costs, stated: the region is a threshold of 2×2 means, so a wall
+half way across a block moves a pixel INTO the pocket (never out), and a feature
+narrower than the lattice — a one-pixel line, a lone pixel — is not seen at all;
+the field's bound on curves is √2 texels, 2.83 px. `--lattice` measures the first
+two out of the plugin's own field; its negative control floods at the full raster
+and fails.
+
+### ☠️ A field sampled from a coarser lattice bends every corner over a texel
+
+The first run on the lattice put the fillet at 9.350 for r = 9 at 320×180 (0.35 px
+out; it had been 8.981), and `--feed` at 89.64 px/s for 90. One cause: the trace
+grid samples the field bilinearly, and where the field's ridge runs into an offset
+contour's corner the samples bend over a whole texel — two trace cells. The corner
+putback (`SharpenCorners`) read its straight runs from two points out, which were
+still on the bend, so it saw no corner and the chord stayed; Douglas–Peucker then
+merged the chord's two ends (0.18 px each way) into one vertex. The tool's corner
+fell short, so the fillet read large, and the first pass started on a chamfer, so
+the tool's first second along it was 0.36 px short. `Levels::fieldTexel` now sets
+the reach in trace cells to cover a field texel; the fillet reads 8.981 again, the
+feed is exact. `--feed` catching a tracer defect is not something it was designed
+to do: keep the checks independent and they cross-examine each other.
 
 ### ☠️ A digitised distance lit one texel apart is a sunburst
 
@@ -237,6 +274,12 @@ control, a CPU re-computation — not by reading it.
 - **`--latch` pressed Restart after the resize,** when the new job's raster
   reallocated the cut anyway, so a Restart that kept the cut still passed. Its
   negative control caught it. Restart is now checked at the job's own raster.
+- **`--slot`'s wide slot on the lattice passed by float noise** (237e218): drawn as
+  the least integer over 2r + 2k, it came out 22 px at 320×180 because the Tool
+  Diameter control's round trip leaves r at 8.99999, and the slot sat in the derived
+  worst case, its sampled peak 9.000 against r. Found by reading the check's own
+  print ("22 px > 2r + 2k = 22.00") against the rule it claimed. Now 2r + 2k + 1,
+  half a pixel of peak over the worst case, as the full-raster fixture had.
 - **The √2 story above:** a bound argued, not measured, and false at 1080p.
 
 ---
@@ -245,19 +288,22 @@ control, a CPU re-computation — not by reading it.
 
 One line per check. Every tolerance is derived, not fitted; every check ran at
 320×180 and 1280×720 in `verify.sh`, and at 640×480, 333×187 and 1920×1080 by hand
-(`--distance` also once at 3840×2160).
+(`--distance` also once at 3840×2160). k is `kFieldScale`, 2: every check runs on
+the field's lattice, and the checks that read the pocket's walls read them where
+the lattice put them (`latticeEdge`, the majority rule derived in the harness).
 
 | check | what it measures | tolerance and where it comes from | raster dependence |
 | --- | --- | --- | --- |
-| `--distance` square, frame | the plugin's field (R32F, read back) against Felzenszwalb–Huttenlocher's exact EDT of the same mask | **6 ULP** of the distance: GLSL 4.10 §4.7.1 gives sqrt as 1/inversesqrt, 2 + 2.5 ULP, plus one rounding of the half-pixel subtraction; the squared distances are exact integers | none: rectilinear nearest centres lie along rows and columns |
-| `--distance` disc, ring, star, blobs | the same | **√2 px**: the flood's failure on a digitised boundary leaves a pixel the seed of a neighbouring cell, and neighbouring boundary seeds are 8-neighbours (triangle inequality). Holds only if the finish grows with the raster (above) | the finish is 1/128 of the longest side, so the schedule scales with the raster; measured 0 / 0.36 / 0.47 / 0.91 px at 180p / 720p / 1080p / 4K |
-| `--distance` constellation | the same, the known bad case | **√2 px** with the prepass (measured exact); must exceed it without | flooded at 320×180 × 2^k, its own lattice, whatever raster is asked for |
-| `--fillet` | a circle tangent to both walls fitted to 61 ray crossings of the cut coverage (bilinear) | **1 px** on the radius (the spec); each point within **0.5 px** of the fitted circle (a crossing read off a one-pixel ramp, clamped on one side, moves by less than the ramp's half-width). What can move it: the field is exact for a square, the corner is put back exactly, Douglas–Peucker does not touch a corner vertex | rays from 15° to 75° stay 0.13 r clear of both walls, so no tap reaches the black outside at r ≥ 8 px (r = 9 at 180p) |
-| `--slot` narrow | cut coverage past mouth + one trace cell + r + 1 px, the whole slot | **exactly 0**: the sampled field never exceeds the true one, w/2 < r, so no pass is traced in the slot; the stamp's ramp ends at r + 0.5 | the trace cell (1 px up to 1280 wide) is in the margin |
-| `--slot` wide | the slot's centre row, mouth to end | coverage **≥ 0.5** everywhere: w = 2r + 2 leaves one pixel for a sampled peak half a cell low and one for a row of centres half a pixel off the peak | w and r both scale with the height |
-| `--scallop` s > 2r | uncut run widths between 0.5 crossings, rows beside the straight part of the left wall | **0.25 px**: two crossings, each read off a one-pixel ramp with one sample possibly clamped, worst case a(a − ½)/(a + ½) = 0.086 px each; the field, the trace and the passes are exact on a straight wall | rows chosen from r and the span at each raster |
-| `--scallop` s ≤ 2r | the least coverage beside the wall | **≥ 0.5 − 2^-11**: at s = 2r bands meet at exactly 0.5, and the cut buffer is R16F | none |
-| `--feed` | the tool's displacement over one second on a straight pass, at 60 and 30 fps | **1e-9 of Feed**: positions and time are double; one float ULP would be 1e-7 | none: Feed is in job heights |
+| `--distance` square, frame | the plugin's field (R32F, read back, one value a texel) against Felzenszwalb–Huttenlocher's exact EDT of the mask REDUCED to the lattice by the plugin's rule, in job pixels | **6 ULP** of the texel distance, times k: GLSL 4.10 §4.7.1 gives sqrt as 1/inversesqrt, 2 + 2.5 ULP, plus one rounding of the half-texel subtraction; the squared distances are exact integers, and the scaling by 2 is exact; the frame's wall is a multiple of a half, exact | none: rectilinear nearest centres lie along rows and columns of the lattice |
+| `--distance` disc, ring, star, blobs | the same | **√2 texels = √2 k = 2.83 px**: the flood's failure on a digitised boundary leaves a texel the seed of a neighbouring cell, and neighbouring boundary seeds are 8-neighbours on the lattice (triangle inequality). Holds only if the finish grows with the lattice (above) | the finish is 1/128 of the lattice's longest side; measured 0.14 / 0.29 / 0.30 / 0.53 texels (0.28 / 0.58 / 0.59 / 1.05 px) at 180p / 720p / 1080p / 4K |
+| `--distance` constellation | the same, the known bad case | **√2 texels** with the prepass (measured exact); must exceed it without | four 2×2 blocks, flooded on 320×180 × 2^j texels, its own lattice, whatever raster is asked for (640×360 job pixels at a requested 320×180) |
+| `--lattice` | the field's size, and its sign at every job pixel against the harness's own 2×2 majority of the mask, on odd walls, an outside speck and a one-pixel hairline | **exact**: ceil(W/2) × ceil(H/2) texels, 0 pixels of the wrong sign; and the fixture must discriminate (the job-raster mask disagrees with the reduced one at > 0 pixels: 823 at 180p, 3,301 at 720p), or a full-raster field could pass | the fixture is placed from the raster and forced odd at every size |
+| `--fillet` | a circle tangent to both WORKING walls (in a pixel at 180p, where the square's edges are odd; unmoved at 720p) fitted to 61 ray crossings of the cut coverage (bilinear) | **1 px** on the radius (the spec), now at the pixel in the worst case: the corner's cut across a field TEXEL, a quarter of its diagonal (0.71 px; the bilinear corner of min(x, y) sits 0.59 px in) + Douglas–Peucker 0.2 + a crossing 0.09 = 0.997 — and in fact the corner is put back exactly, since `SharpenCorners` reaches a texel out. Each point within **0.5 px** of the fitted circle (a crossing read off a one-pixel ramp, clamped on one side, moves by less than the ramp's half-width) | rays from 15° to 75° stay 0.13 r clear of both walls, so no tap reaches the black outside at r ≥ 8 px (r = 9 at 180p) |
+| `--slot` narrow | cut coverage past mouth + k/2 + one trace cell + r + 1 px, the whole slot | **exactly 0**: the lattice only narrows a slot, so w/2 < r still; the sampled field never exceeds the true one; a trace sample reads r or more only if a texel it interpolates does, and all of those are left of the mouth, so no sample from mouth + k/2 on does, and a crossing lands at most a cell further; the stamp's ramp ends at r + 0.5 | the trace cell (1 px up to 1280 wide) and the texel are in the margin |
+| `--slot` wide | the working slot's centre row, mouth to within a pixel of its working end wall | coverage **≥ 0.5** everywhere: the sampled peak is low by up to k/2 for the walls (each moves in by up to k/2) and k/2 for the texel centres nearest the middle, so it is at least w/2 − k, and w keeps half a pixel of peak over that: w/2 − k ≥ r + ½, w = 2r + 2k + 1 (23 px at 180p, 77 at 720p). At k = 1 with only the texel's half pixel to lose, the same rule gives the 2r + 2 this check used to draw. Not "the least integer over 2r + 2k", which 237e218 used: 22 at 180p, over only by the control's float round trip (r = 8.99999), in the worst case exactly (9.000 against 8.99999); 9124b4f | w and r both scale with the height |
+| `--scallop` s > 2r | uncut run widths between 0.5 crossings, rows beside the straight part of the working left wall | **0.25 px**: two crossings, each read off a one-pixel ramp with one sample possibly clamped, worst case a(a − ½)/(a + ½) = 0.086 px each; the field, the trace and the passes are exact on a straight wall (the field is linear there, and bilinear at quarter texels is exact, even in 8-bit weights); the lattice moves the wall and every pass with it, which a width does not see | rows chosen from r, the span and the working walls at each raster |
+| `--scallop` s ≤ 2r | the least coverage from the working wall | **≥ 0.5 − 2^-11**: at s = 2r bands meet at exactly 0.5, and the cut buffer is R16F | none |
+| `--feed` | the tool's displacement over one second on a straight pass, at 60 and 30 fps | **1e-9 of Feed**: positions and time are double; one float ULP would be 1e-7. Blind to the lattice, except that a pass must start on a corner, not a chamfer (the trap above) | none: Feed is in job heights |
 | `--feed` picture | the tool's ring centroid in the frame against its position | **one texel**: a symmetric antialiased ring sampled at pixel centres | the ring width scales with the height |
 | `--latch` restart | pixels cut one frame after Restart | **one frame's capsule**, 2(r + 1)·Feed·dt + π(r + 1)², a pixel of antialiasing all round | computed from the raster |
 | `--latch` resize | every fully cut pixel's four successors at twice the raster | **≥ 0.5625 − 1/256**: bilinear at a quarter texel, the nearest texel weighs 0.75², less the filter's 8-bit weights | the check resizes to twice whatever raster it is given |
@@ -274,6 +320,9 @@ and resolve use `texelFetch` and no derivatives).
 What might still differ on another rasteriser: the bilinear filtering of the cut and
 the field in the composite (8-bit sub-texel weights on some GPUs — the `--latch`
 tolerance allows for it, and at the job's own raster every tap is at a texel centre);
+the bilinear sampling of the lattice's field onto the trace grid (at and under 1280
+wide every sample is at a quarter texel, weights 1/4 and 3/4, exact in 8 bits; above
+it, arbitrary weights, which no check at those rasters is tight enough to see);
 the stamp's quads cover whole pixels by their centres, which every conforming
 rasteriser agrees on; `sqrt` within its stated ULPs. The GL checks have never run on a
 software rasteriser: CI would run them there if its runner could make a 4.1 context.
@@ -282,19 +331,20 @@ software rasteriser: CI would run them there if its runner could make a 4.1 cont
 
 ## Negative controls and the mutation
 
-`tptest --negative` runs seven, and `--perturb BITS` runs any check verbosely against
+`tptest --negative` runs eight, and `--perturb BITS` runs any check verbosely against
 one. Each perturbs the *plugin* — a `Perturb` bit the shipped plugin carries at zero
 — never the harness's expectation. At 320×180:
 
 | perturbation | what fails |
 | --- | --- |
-| no 1+JFA prepass (the spec's) | `--distance`: the constellation 5.69 px out, bound √2 (23.4 px at 720p) |
+| no 1+JFA prepass (the spec's) | `--distance`: the constellation 5.69 texels (11.4 px) out, bound √2 texels (11.6 texels, 23.2 px, at 720p) |
 | a square tool (the spec's) | `--fillet`: the fitted radius 2.25 for r = 9, points 0.64 px off any circle |
-| the first pass at r/2 | `--slot`: 2,224 pixels cut in a slot 2 px narrower than the tool |
+| the first pass at r/2 | `--slot`: 2,208 pixels cut in a slot 2 px narrower than the tool |
 | the stepover read in radii | `--scallop`: no ridges at 1.25, 1.5 or 2 diameters |
 | Feed / 60 a frame, whatever dt | `--feed`: 45 px/s against 90 at 30 fps (right at 60) |
 | a resize that re-grabs the job | `--latch`: 15,304 of 16,608 successors uncut, the job at the new raster |
 | a Restart that keeps the cut | `--latch`: 4,468 pixels still cut after Restart, bound 434 |
+| the field at the full raster (`kPerturbFullResField`) | `--lattice`, on both counts: the field 320×180 against 160×90, and 823 pixels of the wrong sign — the odd walls, the speck and the hairline (1280×720 against 640×360 and 3,301 at 720p) |
 
 And `--negative-offline`, with no GL: the reference EDT with a city-block distance
 fails `--exact`; crossings put at the nearer sample, and corners left as chords, each
@@ -302,15 +352,22 @@ fail `--march`.
 
 ### The mutation
 
-One character of the shipped GLSL, on a clean committed tree: in the resolve pass,
-`min( toStock, float( wall ) ) - 0.5` → `+ 0.5` (every inside distance one pixel too
-long). Caught by `--distance` (square and frame 1.000 px out against 6 ULP) and
-`--fillet` (radius 5.5 for 9) at 320×180 and 1280×720. **Not** caught by `--slot`
-(the narrow slot's field rose to 8.5, still under r = 9), `--scallop` (it measures
-widths, which a uniform offset does not change), `--feed` or `--latch`, correctly. The
-curved shapes in `--distance` passed too: a uniform 1 px is under √2, which is why the
+One character of the shipped GLSL, on a clean committed tree (237e218): in the
+resolve pass, `( centreDistance( p, s.xy ) - 0.5 ) * Scale` → `+ 0.5` (every inside
+distance to stock one texel, 2 px, too long). Caught by `--distance` (the square
+2.000 px out against 6 ULP) and `--fillet` (radius 2.25 for 9 at 320×180, 29.0 for
+36 at 1280×720) at both rasters, and by `--slot` at 320×180 (the narrow slot's field
+rose from 7 to 9 = r, and 2,206 pixels were cut). **Not** caught by `--slot` at
+1280×720 (35 against r = 36), `--scallop` (widths do not see a uniform offset),
+`--feed`, `--latch` or `--lattice` (the sign is unchanged), correctly; nor by the
+frame, whose field is the wall term alone, which this line no longer touches. The
+curved shapes passed too: a uniform texel is under √2 texels, which is why the
 rectilinear shapes are held to the ULP. Reverted with `git checkout
 source/Shaders.cpp`; the tree was clean before and after.
+
+The first mutation, before the lattice, changed `min( toStock, float( wall ) ) -
+0.5`, a line that no longer exists; it was caught by `--distance` (square and frame)
+and `--fillet`.
 
 ---
 
@@ -327,11 +384,29 @@ source/Shaders.cpp`; the tree was clean before and after.
   samples half a cell outside the grid carries the wall's own field.
 - **The field's sign and offset.** Inside positive; half a pixel off the centre
   distance, so a straight wall is exactly where the field says.
-- **The flood is 1 + JFA + a finish from 1/128 of the longest side** (above), at full
-  resolution. The spec's 1+JFA is the prepass; the finish is mine.
-- **One sample a pixel up to 1280 wide on the trace grid.** At 1280×720 and under,
-  every check sees the plugin's own pixels; above, a sample covers 1.5 px (1080p) or
-  3 px (4K) and Live's trace stays near 4.5 ms.
+- **The flood is 1 + JFA + a finish from 1/128 of the longest side** (above), on the
+  working lattice. The spec's 1+JFA is the prepass; the finish is mine.
+- **The field on a lattice of two job pixels a texel, at every raster**
+  (`kFieldScale`, 2026-09-23, asked for so Live fits a 4K frame). Fixed, not capped at
+  a height, so the verify rasters run the 4K code (the trap above). Two, not four:
+  at two the 4K field is 2.9 ms and the CPU trace (4.7 ms) is already the larger
+  share of Live, so four would save under 2 ms at 4K and double every lattice term in
+  every tolerance; and at 320×180 a tool of r = 9 px is still 4.5 texels. The
+  region is the threshold of each 2×2 block's MEAN (texelFetch, so the host's
+  filtering never enters), which for a clean mask is "more than half the block", a
+  tie going outside, so the pocket only ever shrinks onto the lattice. Smooth's
+  sigma is converted to texels, and under 0.3 texels (0.6 px) no blur runs: the
+  block mean is already that much smoothing. An odd raster's last texel overhangs
+  the frame by a pixel; the frame's wall is measured on the job raster and the
+  sample and composite passes map the job's 0..1 onto the lattice's (`FieldUV`), so
+  nothing moves at 333×187. The cut, the trace grid, the tool and every length stay
+  in job pixels.
+- **`SharpenCorners` reaches a field texel out**, not only a trace cell, when the
+  grid is sampled from a coarser field (`Levels::fieldTexel`).
+- **One sample a pixel up to 1280 wide on the trace grid**, sampling the lattice's
+  field bilinearly. At 1280×720 and under every sample is at a quarter texel;
+  above, a sample covers 1.5 px (1080p) or 3 px (4K) and Live's trace stays near
+  4.6 ms.
 - **Simplify to 0.2 px**, and put corners back first.
 - **Pocket by pocket.** Loops form a forest (a loop's parent is the loop one level out
   it lies nearest to); Outside In cuts a loop before its children, Inside Out after.
@@ -371,15 +446,24 @@ Every number is `tools/verify.sh` on this machine against a fresh universal Rele
 build, at 320×180 and 1280×720, with the same checks passing at 640×480, 333×187 and
 1920×1080 by hand.
 
-- **Distance.** Square and frame exact (max 1e-4 px at 1080p, inside 6 ULP). Disc,
-  ring, star, blobs: max 0 / 0 / 0 / 0 px at 320×180; 0.36 / 0.06 / 0.04 / 0.14 at
-  1280×720; 0.47 / 0.36 / 0.03 / 0.11 at 1920×1080; 0.91 / 0.49 / 0.14 / 0.20 at
-  3840×2160 (once, by hand). The constellation exact at every raster; without the
-  prepass 5.69 px (180p), 23.4 (720p), 47.1 (4K); plain JFA 9.27, 39.3, 79.3.
-- **Fillet.** Radius 8.981 for 9 at 320×180, 36.002 for 36 at 1280×720, all four
-  corners; every boundary point within 0.057 / 0.064 px of the fitted circle.
-- **Slot.** 16 px against 2r = 18: 0 pixels cut over 139 px of slot; 20 px: its centre
-  row cut throughout (least coverage 1.0). 70 and 74 against 72 at 720p, the same.
+- **Distance**, on the lattice of two pixels, against the exact EDT of the reduced
+  mask. Square and frame exact (max 1e-4 px at 1080p and 4K, inside 6 ULP). Disc,
+  ring, star, blobs, max in px: 0.28 / 0 / 0.08 / 0 at 320×180; 0.58 / 0.06 / 0 /
+  0.15 at 1280×720; 0.59 / 0.44 / 0.03 / 0.20 at 1920×1080; 1.05 / 0.68 / 0.17 / 0.22
+  at 3840×2160 (once, by hand) — the worst 0.53 texels against √2. The constellation
+  exact at every raster; without the prepass 5.69 texels (11.4 px, lattice 320×180),
+  11.60 (23.2 px, 640×360), 23.4 (46.9 px, 1280×720 at 4K); plain JFA 18.5, 38.6,
+  78.6 px. At the full raster, before the lattice, the curved maxima were 0 / 0.36 /
+  0.47 / 0.91 px: in texels the lattice's are no worse, in pixels up to 1.05.
+- **Lattice.** The field 160×90 at 320×180 and 640×360 at 1280×720 (and ceil(W/2) ×
+  ceil(H/2) at 333×187), 0 pixels of the wrong sign, on fixtures where the
+  full-raster mask disagrees at 823 and 3,301 pixels.
+- **Fillet.** Radius 8.981 for 9 at 320×180 (walls a pixel in, on the lattice),
+  36.002 for 36 at 1280×720, all four corners; every boundary point within 0.057 /
+  0.064 px of the fitted circle — the same figures as at the full raster.
+- **Slot.** 16 px against 2r = 18: 0 pixels cut over 138 px of slot; 23 px (2r + 2k + 1):
+  its centre row cut throughout (least coverage 1.0). 70 and 77 against 72 at 720p,
+  the same; 24, 53 and 113 px at 333×187, 640×480 and 1920×1080.
 - **Scallop.** 1.25, 1.5 and 2 diameters: ridge widths within 0.086, 0.150, 0.008 px
   (180p) and 0.075, 0.150, 0.009 (720p) of s − 2r; 0.5 and 1.0 diameters: no ridge,
   least coverage 1.0 and 0.5996.
@@ -391,8 +475,8 @@ build, at 320×180 and 1280×720, with the same checks passing at 640×480, 333�
   brute force on 41,795 pixels; circles within 0.90 of the cell²/(8ρ) bound; corners
   within 2.7e-7 (bound 3.8e-6); both orders visit every loop once with rapids only
   between loops.
-- **Negative controls.** All seven fail their check; all three offline ones too.
-- **Mutation.** Caught by two checks (above).
+- **Negative controls.** All eight fail their check; all three offline ones too.
+- **Mutation.** Caught by two checks at both rasters and a third at 320×180 (above).
 - **No dead controls**, all 25, with the four About buttons skipped.
 - **Every shader compiles** through `glslc`, all ten, as the plugin assembles them.
 - **`--pipe`** returns exactly two frames for two and a half, refuses an unknown cue,
@@ -401,16 +485,23 @@ build, at 320×180 and 1280×720, with the same checks passing at 640×480, 333�
   `com.stoatworks.ffgl.toolpath`, ad-hoc signs, and `oxbow` reports `SW Toolpath` /
   `TP01` / `effect` and renders 120 frames through `plugMain`.
 - **Render cost** at the defaults on the test card, best of three runs of 60 frames
-  after a warm-up, `glFinish` both sides, on a shared GPU:
+  after a warm-up, `glFinish` both sides, on a shared GPU — one run of
+  `build-universal/tptest --bench-4k --frames 60` after `verify.sh` passed, the
+  field on its lattice:
 
   | | Latch ms | Live ms | the field ms | trace + order ms (CPU) |
   | --- | --- | --- | --- | --- |
-  | 1280×720 | 0.07 | 7.0 | 1.8 | 4.4 |
-  | 1920×1080 | 0.10 | 7.4 | 2.3 | 4.6 |
-  | 3840×2160 | 0.16 | 16.2 | 10.8 | 4.9 |
+  | 1280×720 | 0.08 | 6.5 | 1.8 | 4.6 |
+  | 1920×1080 | 0.12 | 7.3 | 2.6 | 4.5 |
+  | 3840×2160 | 0.16 | **9.0** | **2.9** | 4.7 |
 
-  The field is timed inside the plugin with `glFinish` on both sides; the trace
-  includes the readback stall. A Latch job pays both once, when it is grabbed.
+  Before, with the field at the full raster (b58aa2f, the same machine, earlier the
+  same day): Live 7.0 / 7.4 / **16.2**, the field 1.8 / 2.3 / **10.8**. So at 4K the
+  field is 3.7× cheaper and Live 1.8×; at 720p and 1080p nothing measurable changed
+  (the 1080p field read 2.6 against 2.3, within what a shared GPU moves between
+  runs). The field is timed inside the plugin with `glFinish` on both sides; the
+  trace includes the readback stall. A Latch job pays both once, when it is
+  grabbed.
 
 ### Assumed, or not done
 
@@ -420,9 +511,14 @@ build, at 320×180 and 1280×720, with the same checks passing at 640×480, 333�
 - **Never seen on footage.** Every picture is the synthetic card. A thresholded clip
   of real video is a mask full of specks; each speck is a pocket or an island, and
   the ordering's cost (loops squared, capped) and the look are unjudged there.
-- **The √2 bound is an argument from the failure mechanism, checked to 4K.** JFA has
-  no proven bound; at 8K the finish grows again, but that raster was never run.
-- **Live at 4K costs a whole frame** (16 ms); not optimised.
+- **The √2-texel bound is an argument from the failure mechanism, checked to 4K**
+  (a lattice of 1920×1080). JFA has no proven bound; at 8K the finish grows again,
+  but that raster was never run.
+- **Live at 4K costs 9.0 ms**, a little over half a 60 fps frame, of which the CPU
+  trace is 4.7. Whether Resolume, compositing its own layers, leaves that much of a
+  frame is unmeasured.
+- **The lattice's look is unjudged.** Two-pixel steps in the region, and a one-pixel
+  line in the clip that never becomes a pocket, are measured, not seen on footage.
 - **The trace at 1080p and 4K** is on a grid 1.5 and 3 px a sample; every check ran at
   or under 1280 wide, where it is one sample a pixel, except by hand at 1920×1080.
 - **The clock-unit voting** is readout's, which has met Arena; this plugin has not.
@@ -435,9 +531,12 @@ build, at 320×180 and 1280×720, with the same checks passing at 640×480, 333�
 
 ## Open questions
 
-- **Should the field be computed at a stated fraction above 1080p?** Half resolution
-  would take the 4K flood from 11 ms to about 3, at the price of every length being
-  measured on a coarser lattice than the picture.
+- **Should the trace follow the lattice?** The field now costs 2.9 ms at 4K and the
+  CPU trace 4.7; the trace grid samples the lattice's field onto one sample a job
+  pixel up to 1280 wide, which at 720p is four samples a texel. Tracing on the
+  lattice itself would quarter the CPU work at and under 1280 wide, at the price of
+  re-deriving `--slot`'s and `--fillet`'s cell terms again. (The field's own
+  fraction was the question here; it is answered above: two, at every raster.)
 - **Should there be a finishing pass along the medial axis?** Real CAM adds one, and
   it would remove the centre islands; it is a skeleton, which the flood's seeds could
   give (where the nearest outside seeds of neighbours disagree).

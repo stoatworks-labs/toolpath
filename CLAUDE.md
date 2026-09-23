@@ -34,7 +34,10 @@ or any check's tolerance.
   every GL check at 320x180 AND 1280x720 + --pipe + the sweep + a bench + the
   bundle, ~20 s)
 - The shaders alone: `tools/check-shaders.sh build/tptest` (needs `brew install shaderc`)
-- The field is an exact EDT (6 ULP straight, √2 curved): `./build/tptest --distance`
+- The field is an exact EDT of its lattice (6 ULP straight, √2 texels curved):
+  `./build/tptest --distance`
+- The field IS on the working lattice (size, and sign at every pixel):
+  `./build/tptest --lattice`
 - Inside corners keep a fillet of radius r: `./build/tptest --fillet`
 - A slot under 2r never entered, over 2r cut: `./build/tptest --slot`
 - Ridges s − 2r past s = 2r, none below: `./build/tptest --scallop`
@@ -47,15 +50,21 @@ or any check's tolerance.
 - On a machine with no GL: add `--allow-no-gl` to the GL checks for a loud SKIP
 - Every check takes `--size WxH`; CI runs them at 320x180
 - No dead controls: `python3 tools/sweep.py` (`--size WxH`, `--jobs N`)
-- Render cost: `./build/tptest --bench` (720p, 1080p); `--bench-4k` once, by hand
+- Render cost: `./build/tptest --bench` (720p, 1080p); `--bench-4k` (all three) once, by hand
 - What a host sees: `~/Projects/resolume/oxbow/build/oxbow probe build-universal/Toolpath.bundle`
 
 ## Notes
 - **One field is the whole job.** Detect → threshold → flood (1+JFA, then a finish
-  that grows with the raster) → a signed field, inside positive, the frame's edge a
+  that grows with the lattice) → a signed field, inside positive, the frame's edge a
   wall. `Path.cpp` traces its levels r, r + s … on the CPU, puts corners back, and
   orders them pocket by pocket. The GPU stamps the tool's disc along the path into
   the cut buffer. A wrong pass is almost always a `Path.cpp` fix.
+- **The field is on a lattice of `kFieldScale` = 2 job pixels a texel, at every
+  raster** (detect averages each 2×2 block; a texel is inside when more than half
+  its block is). It holds JOB pixels. The cut, the trace grid and the tool stay at
+  the job raster. Every check's tolerance is derived for the lattice; `--lattice`
+  proves it is the one in use. Change `kFieldScale` and re-derive them all
+  (AGENTS.md).
 - **Lengths are frame heights**, converted in `Controls.cpp`; the tool, the stepover
   and the feed are in JOB pixels (the raster the region was grabbed at).
 - **Nothing absolute crosses from the host clock.** Latch advances Feed × dt, Live
