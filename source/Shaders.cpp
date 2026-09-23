@@ -23,14 +23,20 @@ void main()
 )";
 
 //---------------------------------------------------------------------------
-// 1. detect. tinsel's Detect On, unchanged in meaning.
+// 1. detect. tinsel's Detect On, unchanged in meaning, on the working
+// lattice: each texel is the MEAN of the detected channel over the Scale x
+// Scale block of input pixels it stands for (texelFetch, so the host's
+// filtering never enters), clamped at the frame's edge -- which for a block
+// of two is the mean of the pixels that exist. Thresholded, a texel is
+// inside when its block's mean is over Threshold: for a clean mask, when
+// more than half the block is.
 //---------------------------------------------------------------------------
 const char* const kDetectBody = R"(
 uniform sampler2D InputTexture;
-uniform vec2 MaxUV;
-uniform int DetectOn;//0 luma, 1 alpha, 2 chroma, 3 luma or alpha
+uniform ivec2 InputSize;//the input's pixels (the content, not the hardware size)
+uniform int Scale;      //input pixels to a texel side
+uniform int DetectOn;   //0 luma, 1 alpha, 2 chroma, 3 luma or alpha
 
-in vec2 uv;
 out vec4 fragColor;
 
 float channel( vec4 c )
@@ -62,7 +68,13 @@ float channel( vec4 c )
 
 void main()
 {
-	fragColor = vec4( channel( texture( InputTexture, uv * MaxUV ) ) );
+	ivec2 base = ivec2( gl_FragCoord.xy ) * Scale;
+	ivec2 last = InputSize - ivec2( 1 );
+	float sum  = 0.0;
+	for( int j = 0; j < Scale; ++j )
+		for( int i = 0; i < Scale; ++i )
+			sum += channel( texelFetch( InputTexture, min( base + ivec2( i, j ), last ), 0 ) );
+	fragColor = vec4( sum / float( Scale * Scale ) );
 }
 )";
 
@@ -182,18 +194,21 @@ void main()
 )";
 
 //---------------------------------------------------------------------------
-// 5. resolve. The signed distance field, in pixels.
+// 5. resolve. The signed distance field, in JOB pixels, one value a texel.
 //
-// Inside: the distance from this pixel's centre to the nearest outside pixel
-// centre, less half a pixel, so a straight wall sits half way between the
+// Inside: the distance from this texel's centre to the nearest outside texel
+// centre, less half a texel, so a straight wall sits half way between the
 // last inside centre and the first outside one and d is exactly the distance
-// to it. The frame's edge is a wall too: a virtual outside pixel beyond each
-// edge, whose distance is an integer and needs no flood. Outside: minus the
-// same to the nearest inside centre.
+// to it; then times Scale, exactly, into job pixels. The frame's edge is a
+// wall too, measured in job pixels from the texel's centre to the edge of
+// the JOB raster (not of the lattice, which overhangs it by a pixel when the
+// raster is odd); every term is a multiple of a half, so it is exact and
+// needs no flood. Outside: minus the same to the nearest inside centre.
 //---------------------------------------------------------------------------
 const char* const kResolveBody = R"(
 uniform usampler2D Seeds;
-uniform ivec2 Size;
+uniform float Scale;  //job pixels to a texel side
+uniform vec2 JobSize; //job pixels
 
 out vec4 fragColor;
 
@@ -214,30 +229,33 @@ void main()
 	float d;
 	if( inside )
 	{
-		int wall      = min( min( p.x + 1, Size.x - p.x ), min( p.y + 1, Size.y - p.y ) );
-		float toStock = s.x != NONE ? centreDistance( p, s.xy ) : 1.0e9;
-		d = min( toStock, float( wall ) ) - 0.5;
+		vec2 c        = ( vec2( p ) + 0.5 ) * Scale;
+		float wall    = min( min( c.x, JobSize.x - c.x ), min( c.y, JobSize.y - c.y ) );
+		float toStock = s.x != NONE ? ( centreDistance( p, s.xy ) - 0.5 ) * Scale : 1.0e9;
+		d = min( toStock, wall );
 	}
 	else
 	{
-		d = s.z != NONE ? 0.5 - centreDistance( p, s.zw ) : -1.0e6;
+		d = s.z != NONE ? ( 0.5 - centreDistance( p, s.zw ) ) * Scale : -1.0e6;
 	}
 	fragColor = vec4( d );
 }
 )";
 
 //---------------------------------------------------------------------------
-// 6. sample. The field at the trace grid's points, bilinear.
+// 6. sample. The field at the trace grid's points, bilinear. FieldUV maps
+// the job's 0..1 onto the lattice's, which overhangs an odd raster.
 //---------------------------------------------------------------------------
 const char* const kSampleBody = R"(
 uniform sampler2D Field;
+uniform vec2 FieldUV;
 
 in vec2 uv;
 out vec4 fragColor;
 
 void main()
 {
-	fragColor = vec4( texture( Field, uv ).r );
+	fragColor = vec4( texture( Field, uv * FieldUV ).r );
 }
 )";
 
@@ -312,7 +330,8 @@ const char* const kCompositeBody = R"(
 uniform sampler2D InputTexture;
 uniform vec2 MaxUV;
 uniform sampler2D Cut;    //job raster, coverage in r
-uniform sampler2D Field;  //job raster, signed distance in job pixels
+uniform sampler2D Field;  //working lattice, signed distance in job pixels
+uniform vec2 FieldUV;     //job 0..1 to the lattice's 0..1
 uniform sampler2D Overlay;//output raster: r cut path, g rapids, b the tool
 uniform vec2 JobSize;
 uniform vec2 OutSize;
@@ -337,10 +356,16 @@ float cutAt( vec2 at )
 	return texture( Cut, at ).r;
 }
 
+//The field in job pixels, at a point of the job.
+float fieldJob( vec2 at )
+{
+	return texture( Field, at * FieldUV ).r;
+}
+
 //The field in OUTPUT pixels.
 float fieldAt( vec2 at )
 {
-	return texture( Field, at ).r * ( OutSize.y / JobSize.y );
+	return fieldJob( at ) * ( OutSize.y / JobSize.y );
 }
 
 //The field's gradient, a unit vector where the field is a distance, by
@@ -351,8 +376,8 @@ float fieldAt( vec2 at )
 vec2 fieldGradient( vec2 at, float span )
 {
 	vec2 h   = max( span, 1.0 ) / JobSize;
-	float dx = texture( Field, at + vec2( h.x, 0.0 ) ).r - texture( Field, at - vec2( h.x, 0.0 ) ).r;
-	float dy = texture( Field, at + vec2( 0.0, h.y ) ).r - texture( Field, at - vec2( 0.0, h.y ) ).r;
+	float dx = fieldJob( at + vec2( h.x, 0.0 ) ) - fieldJob( at - vec2( h.x, 0.0 ) );
+	float dy = fieldJob( at + vec2( 0.0, h.y ) ) - fieldJob( at - vec2( 0.0, h.y ) );
 	vec2 g   = vec2( dx, dy );
 	float m  = length( g );
 	return m > 1.0e-4 ? g / m : vec2( 0.0 );
@@ -425,7 +450,7 @@ void main()
 			//depth; the wall of the cut catches the light or not; and inside
 			//the tool's radius of the pocket's own wall the floor rises in a
 			//bevel, lit by the distance field's gradient.
-			float fromWall = texture( Field, uv ).r;
+			float fromWall = fieldJob( uv );
 			float bevel    = cut * ( 1.0 - clamp( fromWall / max( ToolRadius * 2.0, 1.0 ), 0.0, 1.0 ) );
 			float lit      = dot( fieldGradient( uv, 0.25 * ToolRadius ), LightDir );
 			rgb = clip.rgb * ( 1.0 - 0.45 * Depth * cut ) + vec3( 1.2 * Depth * wall * cut ) + clip.rgb * ( 0.6 * Depth * bevel * lit );

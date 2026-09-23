@@ -109,7 +109,15 @@ public:
 		kPerturbFeedPerFrame   = 1 << 5,///< the tool advances Feed / 60 a frame, whatever dt is
 		kPerturbResizeClears   = 1 << 6,///< Latch: a resize re-grabs the region, clearing the cut
 		kPerturbRestartKeeps   = 1 << 7,///< Restart re-grabs but leaves the cut buffer
+		kPerturbFullResField   = 1 << 8,///< the field at the full raster, not the working lattice
 	};
+
+	/// Job pixels to a side of one field texel: the region is decided, and
+	/// the field flooded and resolved, on a lattice this many times coarser
+	/// than the raster, at EVERY raster. Fixed rather than capped so that the
+	/// checks at 320x180 and 1280x720 run the very code that ships at 4K;
+	/// AGENTS.md has why 2 and what it costs.
+	static constexpr int kFieldScale = 2;
 
 	/// Most samples across the trace grid. The field is sampled down to at
 	/// most this wide for the CPU tracer; at or under it, one sample per job
@@ -139,8 +147,14 @@ public:
 		return traceMillis;
 	}
 
-	/// The signed distance field as it stands (job raster, rows bottom-up).
+	/// The signed distance field as it stands, in job pixels, on the working
+	/// lattice (rows bottom-up): ceil( job / FieldScaleForTest() ) texels.
 	bool ReadFieldForTest( std::vector< float >& out, int& width, int& height );
+	/// Job pixels to a field texel side, as the last grab used it.
+	int FieldScaleForTest() const
+	{
+		return fieldScale;
+	}
 	/// The cut buffer as it stands (job raster, rows bottom-up).
 	bool ReadCutForTest( std::vector< float >& out, int& width, int& height );
 	/// Where the tool is, in job pixels (GL convention), and its timeline.
@@ -166,11 +180,22 @@ private:
 	double nowSeconds();
 
 	bool compileAll();
-	/// Detect, blur, seed, flood, resolve at the current raster, into the job
-	/// field. Returns false if a buffer could not be allocated.
+	/// Detect (a mean over each k x k block), blur, seed, flood, resolve on
+	/// the working lattice, into the job field, in job pixels. Returns false
+	/// if a buffer could not be allocated.
 	bool computeField( const FFGLTextureStruct& input, int width, int height );
 	/// Sample the job field onto the trace grid, read it back, trace and order.
 	void buildPath( double radius, double stepover, bool insideOut );
+	/// The job's 0..1 on the field's lattice: 1 unless the raster is odd, when
+	/// the last texel overhangs it by a pixel.
+	float fieldUVx() const
+	{
+		return field.Width() > 0 ? static_cast< float >( jobWidth ) / static_cast< float >( fieldScale * field.Width() ) : 1.0f;
+	}
+	float fieldUVy() const
+	{
+		return field.Height() > 0 ? static_cast< float >( jobHeight ) / static_cast< float >( fieldScale * field.Height() ) : 1.0f;
+	}
 	void stamp( toolpath::PassBuffer& target, const std::vector< toolpath::path::Span >& pieces, float scaleX,
 	            float scaleY, float radius, int shape, float ringWidth, const float channel[ 4 ] );
 
@@ -190,7 +215,7 @@ private:
 
 	toolpath::PassBuffer value[ 2 ];///< the detected channel, and the blur's scratch
 	toolpath::PassBuffer seeds[ 2 ];///< the flood's ping-pong, RGBA16UI
-	toolpath::PassBuffer field;     ///< signed distance, job raster
+	toolpath::PassBuffer field;     ///< signed distance in job pixels, working lattice
 	toolpath::PassBuffer grid;      ///< the field on the trace grid
 	toolpath::PassBuffer cut;       ///< the part: what the tool has removed, job raster
 	toolpath::PassBuffer overlay;   ///< path lines and the tool, output raster
@@ -204,6 +229,7 @@ private:
 
 	int jobWidth    = 0;
 	int jobHeight   = 0;
+	int fieldScale  = kFieldScale;///< job pixels a field texel, for the grab in hand
 	bool captured   = false;
 	int lastWidth   = 0;
 	int lastHeight  = 0;

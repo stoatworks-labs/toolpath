@@ -203,7 +203,7 @@ std::vector< Loop > TraceLevels( const float* grid, int tw, int th, double cellW
 		if( loop.points.size() >= 3 )
 		{
 			if( !( perturb & kTraceNoCorners ) )
-				SharpenCorners( loop, std::max( cellW, cellH ) );
+				SharpenCorners( loop, std::max( cellW, cellH ), levels.fieldTexel );
 			loops.push_back( std::move( loop ) );
 		}
 	}
@@ -225,11 +225,21 @@ std::vector< Loop > TraceLevels( const float* grid, int tw, int th, double cellW
 // meet, and the few points between them -- the ones the ridge can have put
 // wrong -- are replaced by it. The lines are taken from points kCornerReach
 // and more away, which lie on cell edges the ridge does not cross.
+//
+// When the grid is a bilinear SAMPLING of a coarser field (the working
+// lattice, two job pixels a texel, onto a trace grid of one), the ridge
+// bends the sampled contour over a whole texel, and the points kCornerReach
+// cells out are still on the bend: every run fails the straightness test,
+// no corner is put back, and the chord stays (0.18 px each way at 320x180,
+// merged into one vertex by Douglas-Peucker, and the fillet read 0.35 px
+// large). So the reach is kCornerReach of whichever is coarser, the cell or
+// the field's texel.
 //---------------------------------------------------------------------------
-void SharpenCorners( Loop& loop, double cell )
+void SharpenCorners( Loop& loop, double cell, double fieldTexel )
 {
+	const int reach = kCornerReach * std::max( 1, static_cast< int >( std::ceil( fieldTexel / cell - 1e-9 ) ) );
 	const int n = static_cast< int >( loop.points.size() );
-	if( n < 4 * ( kCornerReach + 2 ) )
+	if( n < 4 * ( reach + 2 ) )
 		return;
 	auto P = [ & ]( int i ) -> const Point& {
 		return loop.points[ static_cast< size_t >( ( ( i % n ) + n ) % n ) ];
@@ -263,19 +273,19 @@ void SharpenCorners( Loop& loop, double cell )
 	for( int i = 0; i < n; ++i )
 	{
 		bool peak = true;
-		for( int k = -kCornerReach; k <= kCornerReach && peak; ++k )
+		for( int k = -reach; k <= reach && peak; ++k )
 			if( k != 0 && turn[ static_cast< size_t >( ( ( i + k ) % n + n ) % n ) ] > turn[ static_cast< size_t >( i ) ] )
 				peak = false;
 		if( !peak || turn[ static_cast< size_t >( i ) ] <= 1e-12 )
 			continue;
 
-		//The straight runs: three points each, starting kCornerReach out.
-		const Point& a0 = P( i - kCornerReach - 2 );
-		const Point& a1 = P( i - kCornerReach - 1 );
-		const Point& a2 = P( i - kCornerReach );
-		const Point& b0 = P( i + kCornerReach );
-		const Point& b1 = P( i + kCornerReach + 1 );
-		const Point& b2 = P( i + kCornerReach + 2 );
+		//The straight runs: three points each, starting reach out.
+		const Point& a0 = P( i - reach - 2 );
+		const Point& a1 = P( i - reach - 1 );
+		const Point& a2 = P( i - reach );
+		const Point& b0 = P( i + reach );
+		const Point& b1 = P( i + reach + 1 );
+		const Point& b2 = P( i + reach + 2 );
 		Point ua, ua2, ub, ub2;
 		if( !unit( a0, a1, ua ) || !unit( a1, a2, ua2 ) || !unit( b0, b1, ub ) || !unit( b1, b2, ub2 ) )
 			continue;
@@ -295,10 +305,10 @@ void SharpenCorners( Loop& loop, double cell )
 		//It must be the corner these points were cutting: every point
 		//replaced within reach of it.
 		bool near = true;
-		for( int k = -kCornerReach + 1; k <= kCornerReach - 1; ++k )
-			if( std::hypot( P( i + k ).x - x.x, P( i + k ).y - x.y ) > ( kCornerReach + 0.5 ) * cell )
+		for( int k = -reach + 1; k <= reach - 1; ++k )
+			if( std::hypot( P( i + k ).x - x.x, P( i + k ).y - x.y ) > ( reach + 0.5 ) * cell )
 				near = false;
-		if( near && ( corners.empty() || i - corners.back().at > 2 * kCornerReach ) )
+		if( near && ( corners.empty() || i - corners.back().at > 2 * reach ) )
 			corners.push_back( { i, x } );
 	}
 	if( corners.empty() )
@@ -310,7 +320,7 @@ void SharpenCorners( Loop& loop, double cell )
 	std::vector< int > cornerAt( static_cast< size_t >( n ), -1 );
 	for( size_t c = 0; c < corners.size(); ++c )
 	{
-		for( int k = -kCornerReach + 1; k <= kCornerReach - 1; ++k )
+		for( int k = -reach + 1; k <= reach - 1; ++k )
 			drop[ static_cast< size_t >( ( ( corners[ c ].at + k ) % n + n ) % n ) ] = 1;
 		cornerAt[ static_cast< size_t >( corners[ c ].at ) ] = static_cast< int >( c );
 	}

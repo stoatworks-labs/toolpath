@@ -63,14 +63,15 @@ jobs:
       - name: Geometry
         # If the runner can make a software 4.1 context these run at
         # 320x180, the raster verify.sh also runs locally, and every one was
-        # written to hold there: the constellation is drawn at the power of
-        # two that fits, the fillet's rays stay 0.13 r off the walls, the
-        # slot's margins are one trace cell. If it cannot, --allow-no-gl
+        # written to hold there, on the field's working lattice of 160x90:
+        # the constellation is drawn on the power of two of lattice that fits
+        # (at 640x360), the fillet's rays stay 0.13 r off the walls, the
+        # slot's margins are a trace cell and a texel. If it cannot, --allow-no-gl
         # turns the failure into a loud SKIP rather than a red build that
         # says nothing about the plugin. They always run on the dev Mac.
         timeout-minutes: 20
         run: >
-          ./build/tptest --distance --fillet --slot --scallop --feed --latch --negative
+          ./build/tptest --distance --fillet --slot --scallop --feed --latch --lattice --negative
           --size 320x180 --allow-no-gl
 
       - name: Controls

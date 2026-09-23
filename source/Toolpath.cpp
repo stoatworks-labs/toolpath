@@ -286,40 +286,44 @@ double Toolpath::nowSeconds()
 
 //---------------------------------------------------------------------------
 // Detect, blur, seed, flood, resolve: the field of the current frame's
-// region, into `field`, which then IS the job raster.
+// region, into `field`. The job raster is the input's; the field is on the
+// working lattice, fieldScale job pixels a texel, and holds job pixels.
 //---------------------------------------------------------------------------
 bool Toolpath::computeField( const FFGLTextureStruct& input, int width, int height )
 {
-	const bool allocated = value[ 0 ].Ensure( width, height, GL_R16F, PassBuffer::Sampling::Nearest )
-	                       && value[ 1 ].Ensure( width, height, GL_R16F, PassBuffer::Sampling::Nearest )
-	                       && seeds[ 0 ].Ensure( width, height, GL_RGBA16UI, PassBuffer::Sampling::Nearest )
-	                       && seeds[ 1 ].Ensure( width, height, GL_RGBA16UI, PassBuffer::Sampling::Nearest )
-	                       && field.Ensure( width, height, GL_R32F, PassBuffer::Sampling::Linear );
+	const int k  = ( perturb & kPerturbFullResField ) ? 1 : kFieldScale;
+	const int fw = ( width + k - 1 ) / k;
+	const int fh = ( height + k - 1 ) / k;
+	const bool allocated = value[ 0 ].Ensure( fw, fh, GL_R16F, PassBuffer::Sampling::Nearest )
+	                       && value[ 1 ].Ensure( fw, fh, GL_R16F, PassBuffer::Sampling::Nearest )
+	                       && seeds[ 0 ].Ensure( fw, fh, GL_RGBA16UI, PassBuffer::Sampling::Nearest )
+	                       && seeds[ 1 ].Ensure( fw, fh, GL_RGBA16UI, PassBuffer::Sampling::Nearest )
+	                       && field.Ensure( fw, fh, GL_R32F, PassBuffer::Sampling::Linear );
 	if( !allocated )
 	{
-		diag::error( "could not allocate the field buffers at " + std::to_string( width ) + "x" + std::to_string( height ) );
+		diag::error( "could not allocate the field buffers at " + std::to_string( fw ) + "x" + std::to_string( fh ) );
 		return false;
 	}
-	jobWidth  = width;
-	jobHeight = height;
+	jobWidth   = width;
+	jobHeight  = height;
+	fieldScale = k;
 
 	const auto start = std::chrono::steady_clock::now();
 	if( timing )
 		glFinish();
 
-	const FFGLTexCoords maxCoords = GetMaxGLTexCoords( input );
-
-	//1. detect
+	//1. detect, a mean over each k x k block
 	value[ 0 ].BindForDrawing();
 	glUseProgram( detectShader.GetGLID() );
 	bindTexture( 0, input.Handle );
 	detectShader.Set( "InputTexture", 0 );
-	detectShader.Set( "MaxUV", maxCoords.s, maxCoords.t );
+	glUniform2i( detectShader.FindUniform( "InputSize" ), width, height );
+	detectShader.Set( "Scale", k );
 	detectShader.Set( "DetectOn", controls::OptionIndex( params[ PT_DETECT_ON ], controls::kDetectCount ) );
 	quad.Draw();
 
-	//2. blur, x then y, back into value[ 0 ]
-	const float sigma = controls::SmoothSigmaHeights( params[ PT_SMOOTH ] ) * static_cast< float >( height );
+	//2. blur, x then y, back into value[ 0 ]; sigma in texels
+	const float sigma = controls::SmoothSigmaHeights( params[ PT_SMOOTH ] ) * static_cast< float >( height ) / static_cast< float >( k );
 	if( sigma >= 0.3f )
 	{
 		const int taps = std::min( 48, static_cast< int >( std::ceil( 3.0f * sigma ) ) );
@@ -350,15 +354,16 @@ bool Toolpath::computeField( const FFGLTextureStruct& input, int width, int heig
 	//in tptest --distance), then the halving sequence from the largest
 	//power of two under the longer side, then a finishing run of halving
 	//steps again from 1/128 of it (at least 2, 1: the "+2" of JFA+2). The
-	//finish is what keeps a curved boundary's medial axis within a pixel
+	//finish is what keeps a curved boundary's medial axis within a texel
 	//diagonal of exact at 4K: with only 2, 1 the thin Voronoi wedges there
 	//took seeds 2.4 px (a disc) and 3.3 px (a star) too far, and the error
-	//grows with the raster, so the finish does too.
+	//grows with the raster, so the finish does too. All in texels of the
+	//working lattice: the flood never sees the job raster.
 	std::vector< int > steps;
 	if( !( perturb & kPerturbNoPrepass ) )
 		steps.push_back( 1 );
 	int longest = 1;
-	while( longest < std::max( width, height ) )
+	while( longest < std::max( fw, fh ) )
 		longest *= 2;
 	for( int step = longest / 2; step >= 1; step /= 2 )
 		steps.push_back( step );
@@ -368,7 +373,7 @@ bool Toolpath::computeField( const FFGLTextureStruct& input, int width, int heig
 
 	glUseProgram( floodShader.GetGLID() );
 	floodShader.Set( "Seeds", 0 );
-	glUniform2i( floodShader.FindUniform( "Size" ), width, height );
+	glUniform2i( floodShader.FindUniform( "Size" ), fw, fh );
 	int current = 0;
 	for( int step : steps )
 	{
@@ -384,7 +389,8 @@ bool Toolpath::computeField( const FFGLTextureStruct& input, int width, int heig
 	glUseProgram( resolveShader.GetGLID() );
 	bindTexture( 0, seeds[ current ].TextureID() );
 	resolveShader.Set( "Seeds", 0 );
-	glUniform2i( resolveShader.FindUniform( "Size" ), width, height );
+	resolveShader.Set( "Scale", static_cast< float >( k ) );
+	resolveShader.Set( "JobSize", static_cast< float >( width ), static_cast< float >( height ) );
 	quad.Draw();
 
 	if( timing )
@@ -416,9 +422,12 @@ void Toolpath::buildPath( double radius, double stepover, bool insideOut )
 	const int th = std::max( 1, static_cast< int >( std::lround( static_cast< double >( jobHeight ) * tw / jobWidth ) ) );
 	gridPixels.resize( static_cast< size_t >( tw ) * th );
 
+	//The trace grid's samples are job points; the field's texels are
+	//fieldScale job pixels a side. Only when the two lattices are one and the
+	//same is the field read as it stands.
 	GLint previousFBO = 0;
 	glGetIntegerv( GL_FRAMEBUFFER_BINDING, &previousFBO );
-	if( tw == jobWidth && th == jobHeight )
+	if( tw == field.Width() && th == field.Height() && jobWidth == fieldScale * tw && jobHeight == fieldScale * th )
 	{
 		field.BindForDrawing();
 	}
@@ -433,6 +442,7 @@ void Toolpath::buildPath( double radius, double stepover, bool insideOut )
 		glUseProgram( sampleShader.GetGLID() );
 		bindTexture( 0, field.TextureID() );
 		sampleShader.Set( "Field", 0 );
+		sampleShader.Set( "FieldUV", fieldUVx(), fieldUVy() );
 		quad.Draw();
 	}
 	glPixelStorei( GL_PACK_ALIGNMENT, 4 );
@@ -446,6 +456,7 @@ void Toolpath::buildPath( double radius, double stepover, bool insideOut )
 	path::Levels levels;
 	levels.first = ( perturb & kPerturbFirstLevelHalf ) ? 0.5 * radius : radius;
 	levels.step  = std::max( stepover, 0.25 );
+	levels.fieldTexel = static_cast< double >( fieldScale );
 	levels.count = highest >= levels.first
 	                   ? std::min( kMaxLevels, static_cast< int >( std::floor( ( highest - levels.first ) / levels.step ) ) + 1 )
 	                   : 0;
@@ -677,6 +688,7 @@ FFResult Toolpath::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 	compositeShader.Set( "Cut", 1 );
 	compositeShader.Set( "Field", 2 );
 	compositeShader.Set( "Overlay", 3 );
+	compositeShader.Set( "FieldUV", fieldUVx(), fieldUVy() );
 	compositeShader.Set( "MaxUV", maxCoords.s, maxCoords.t );
 	compositeShader.Set( "JobSize", static_cast< float >( jobWidth ), static_cast< float >( jobHeight ) );
 	compositeShader.Set( "OutSize", static_cast< float >( width ), outH );

@@ -11,12 +11,13 @@
 
 		tptest --out /tmp/frame.png     a picture, on the test card
 		tptest --list                   every parameter, its kind and default
-		tptest --distance               the flooded field against an exact EDT
+		tptest --distance               the flooded field against an exact EDT of its lattice
 		tptest --fillet                 inside corners keep a fillet of radius r
 		tptest --slot                   a slot under 2r is never entered; over, it is cut
 		tptest --scallop                ridges of width s - 2r past s = 2r; none below
 		tptest --feed                   the tool covers Feed px of path a second
 		tptest --latch                  the part survives a resize; Restart clears it
+		tptest --lattice                the field is on the working lattice, and nowhere else
 		tptest --negative               every GL check above can FAIL
 		tptest --offline                the checks that need no GL (what CI runs)
 		tptest --bench                  the render cost, and the field's share
@@ -755,11 +756,19 @@ std::vector< double > squaredEdt( const std::vector< uint8_t >& seed, int width,
 }
 
 /// The field the plugin claims to compute, from the mask, exactly: inside,
-/// the distance to the nearest outside centre or to the frame (a virtual
-/// outside pixel beyond each edge), less half a pixel; outside, minus the
-/// distance to the nearest inside centre, less half a pixel.
-std::vector< double > exactField( const std::vector< uint8_t >& inside, int width, int height, bool cityBlock = false )
+/// the distance to the nearest outside centre, less half a texel, or to the
+/// frame's edge; outside, minus the distance to the nearest inside centre,
+/// less half a texel. In JOB pixels: `inside` is on a lattice `scale` job
+/// pixels a texel, and the frame is the job raster's, jobWidth x jobHeight
+/// (by default the lattice's own). With scale 1 it is the plain EDT field.
+std::vector< double > exactField( const std::vector< uint8_t >& inside, int width, int height, bool cityBlock = false,
+                                  int scale = 1, int jobWidth = 0, int jobHeight = 0 )
 {
+	if( jobWidth <= 0 )
+		jobWidth = width * scale;
+	if( jobHeight <= 0 )
+		jobHeight = height * scale;
+	const double k = scale;
 	std::vector< uint8_t > outside( inside.size() );
 	for( size_t i = 0; i < inside.size(); ++i )
 		outside[ i ] = inside[ i ] ? 0 : 1;
@@ -773,47 +782,114 @@ std::vector< double > exactField( const std::vector< uint8_t >& inside, int widt
 			const size_t i = static_cast< size_t >( y ) * width + x;
 			if( inside[ i ] )
 			{
-				const double wall = std::min( std::min( x + 1, width - x ), std::min( y + 1, height - y ) );
-				const double d    = toOutside[ i ] < kInf ? std::sqrt( toOutside[ i ] ) : kInf;
-				field[ i ]        = std::min( d, wall ) - 0.5;
+				const double cx   = k * ( x + 0.5 ), cy = k * ( y + 0.5 );
+				const double wall = std::min( std::min( cx, jobWidth - cx ), std::min( cy, jobHeight - cy ) );
+				const double d    = toOutside[ i ] < kInf ? k * ( std::sqrt( toOutside[ i ] ) - 0.5 ) : kInf;
+				field[ i ]        = std::min( d, wall );
 			}
 			else
-				field[ i ] = toInside[ i ] < kInf ? 0.5 - std::sqrt( toInside[ i ] ) : -1.0e6;
+				field[ i ] = toInside[ i ] < kInf ? k * ( 0.5 - std::sqrt( toInside[ i ] ) ) : -1.0e6;
 		}
 	return field;
 }
 
 //---------------------------------------------------------------------------
+// The working lattice. The plugin decides the region, and floods and
+// resolves the field, on texels Toolpath::kFieldScale job pixels a side; the
+// checks derive what that does rather than looking away from it.
+//---------------------------------------------------------------------------
+constexpr int kLattice = Toolpath::kFieldScale;
+
+int latticeSide( int pixels, int k = kLattice )
+{
+	return ( pixels + k - 1 ) / k;
+}
+
+/// The working lattice's mask from a job-raster mask, by the plugin's rule:
+/// a texel is inside when its block's mean is over the threshold -- for a
+/// clean 0/1 mask at 0.5, when MORE than half its k x k block is inside --
+/// with the block clamped at the frame's edge, as the detect pass's
+/// texelFetch is.
+std::vector< uint8_t > reduceMask( const std::vector< uint8_t >& mask, int width, int height, int k = kLattice )
+{
+	const int fw = latticeSide( width, k ), fh = latticeSide( height, k );
+	std::vector< uint8_t > out( static_cast< size_t >( fw ) * fh );
+	for( int j = 0; j < fh; ++j )
+		for( int i = 0; i < fw; ++i )
+		{
+			int count = 0;
+			for( int b = 0; b < k; ++b )
+				for( int a = 0; a < k; ++a )
+				{
+					const int x = std::min( k * i + a, width - 1 ), y = std::min( k * j + b, height - 1 );
+					count += mask[ static_cast< size_t >( y ) * width + x ] ? 1 : 0;
+				}
+			out[ static_cast< size_t >( j ) * fw + i ] = 2 * count > k * k ? 1 : 0;
+		}
+	return out;
+}
+
+/// Where the working lattice puts a straight wall the job raster has at
+/// pixel edge e (the region at >= e if `insideAbove`, else at < e): on a
+/// lattice line, the one the majority rule picks. A wall half way across a
+/// block of two goes to the side that is NOT inside -- the region shrinks
+/// onto the lattice, by at most k/2 px, and never grows.
+int latticeEdge( int e, bool insideAbove, int k = kLattice )
+{
+	const int b = e / k, rem = e - b * k;
+	if( rem == 0 )
+		return e;
+	const int insideCount = insideAbove ? k - rem : rem;
+	const bool blockInside = 2 * insideCount > k;
+	return insideAbove ? ( blockInside ? b * k : ( b + 1 ) * k ) : ( blockInside ? ( b + 1 ) * k : b * k );
+}
+
+//---------------------------------------------------------------------------
 // --distance
 //
-// The flooded field against the exact EDT of the same mask, pixel for
-// pixel, on shapes whose answer the reference computes exactly:
+// The flooded field against the exact EDT of the same mask, texel for
+// texel, on shapes whose answer the reference computes exactly. The mask the
+// plugin floods is the WORKING LATTICE's -- the job-raster mask reduced by
+// the plugin's majority rule (reduceMask), k = kFieldScale job pixels a
+// texel -- and the field is in job pixels, k x the lattice's own distance.
+// So every bound below is the full-raster argument made on the lattice, and
+// expressed in job pixels:
 //
 //   square, frame   rectilinear. Every nearest centre is along a row or a
 //                   column, the flood cannot miss it, and the field must be
 //                   EXACT to the GPU's sqrt: 6 ULP of the distance (GLSL
 //                   4.10 section 4.7.1: sqrt is inherited from 1/inversesqrt,
-//                   2 + 2.5 ULP, and the half-pixel subtraction rounds once).
+//                   2 + 2.5 ULP, and the half-texel subtraction rounds once;
+//                   the scaling by k = 2 is exact, so it is 6 ULP of the
+//                   texel distance, times k).
 //   disc, ring,     curved. JFA has no error bound in general; its known
 //   star, blobs     failure on a digitised boundary is the thin Voronoi wedge
-//                   along the medial axis, where a pixel is left holding the
+//                   along the medial axis, where a texel is left holding the
 //                   seed of a NEIGHBOURING cell. Neighbouring seeds on a
-//                   digitised boundary are 8-neighbours, at most sqrt2 apart,
-//                   so by the triangle inequality the distance is at most
-//                   SQRT2 too long. That is the bound, and it is only true if
-//                   the flood's surviving errors are of that kind: with only
-//                   the 2, 1 finish they were not (a 4K disc 2.4 px out, a
-//                   star 3.3), which is why the finish grows with the raster.
-//   constellation   the known bad case: four one-pixel islands, sparse seeds,
+//                   digitised boundary are 8-neighbours, at most sqrt2 texels
+//                   apart, so by the triangle inequality the distance is at
+//                   most SQRT2 TEXELS -- sqrt2 k job pixels -- too long. That
+//                   is the bound, and it is only true if the flood's
+//                   surviving errors are of that kind: with only the 2, 1
+//                   finish they were not (a 4K disc 2.4 px out, a star 3.3,
+//                   when the flood was at the full raster), which is why the
+//                   finish grows with the lattice.
+//   constellation   the known bad case: four one-texel islands, sparse seeds,
 //                   Rong & Tan's configuration, where the competitor can be
 //                   any seed at all. Without the 1+ prepass the flood misses
-//                   by 5.7 px at 320x180 and 23 px at 1280x720, finish and
-//                   all; the prepass is what repairs it, to the same sqrt2
-//                   (in fact exactly). It is drawn and
-//                   flooded at its own raster, 320x180 x 2^k -- the largest
-//                   that fits -- because the configuration and its failure
-//                   are properties of that lattice: at 333x187 plain JFA gets
-//                   it right.
+//                   by 5.7 texels on a 320x180 lattice and 23 on 1280x720,
+//                   finish and all; the prepass is what repairs it, to the
+//                   same sqrt2 (in fact exactly). It is drawn and flooded at
+//                   its own LATTICE, 320x180 x 2^j texels -- the largest that
+//                   fits, or the smallest there is -- because the
+//                   configuration and its failure are properties of that
+//                   lattice: at 333x187 plain JFA gets it right. Each island
+//                   is a k x k block of job pixels, so it survives the
+//                   reduction as one texel; at a requested 320x180 the job
+//                   raster is 640x360, the first whose lattice is 320x180.
+//
+// Before any of that, the field must BE on the working lattice:
+// ceil( raster / k ) texels. A field at any other size fails outright.
 //
 // Reported with and without the corrections. The negative control skips the
 // prepass and the constellation must break the bound.
@@ -825,19 +901,20 @@ struct Shape
 	std::function< bool( double x, double y ) > inside;//pixel centre, GL
 };
 
-/// The largest power of two k with 320k <= width and 180k <= height: the
-/// constellation is drawn and flooded at 320k x 180k. The flood's jump
-/// sequence scales by k exactly with the raster, so the configuration and
-/// its failure are the same at every such raster -- and only there.
+/// The largest power of two j whose LATTICE of 320j x 180j texels fits the
+/// raster (at least 1): the constellation is drawn on the job raster
+/// kLattice times that and flooded on that lattice. The flood's jump
+/// sequence scales by j exactly with the lattice, so the configuration and
+/// its failure are the same on every such lattice -- and only there.
 int constellationScale( int width, int height )
 {
-	int k = 1;
-	while( 320 * k * 2 <= width && 180 * k * 2 <= height )
-		k *= 2;
-	return k;
+	int j = 1;
+	while( 320 * j * 2 * kLattice <= width && 180 * j * 2 * kLattice <= height )
+		j *= 2;
+	return j;
 }
 
-/// The four islands, in pixels of a 320x180 raster, (x, y) with y up. Found
+/// The four islands, in texels of a 320x180 lattice, (x, y) with y up. Found
 /// by searching random sparse constellations (a numpy model of this flood,
 /// in the session that wrote it) for one that the flood without its 1+
 /// prepass gets badly wrong at both 320x180 and 1280x720, and the full flood
@@ -887,7 +964,8 @@ std::vector< Shape > distanceShapes( int width, int height )
 			 return sum > 0.5;
 		 } },
 		{ "constellation", false, [ = ]( double x, double y ) {
-			 const int px = static_cast< int >( x ), py = static_cast< int >( y );
+			 //One texel of the lattice each: a kLattice-square block of pixels.
+			 const int px = static_cast< int >( x ) / kLattice, py = static_cast< int >( y ) / kLattice;
 			 for( const auto& p : kConstellation )
 				 if( px == p[ 0 ] * k && py == p[ 1 ] * k )
 					 return true;
@@ -902,9 +980,13 @@ struct FieldError
 	double rms    = 0.0;
 	int overBound = 0;
 	bool ok       = false;
+	bool lattice  = true;///< the field was on the working lattice at all
+	int fieldWidth = 0, fieldHeight = 0;
 };
 
-/// Render the field of `mask` with the given perturbation and compare it.
+/// Render the field of the job-raster `mask` with the given perturbation and
+/// compare it, texel for texel, with the exact field of the working
+/// lattice's mask (`exact`, fw x fh, in job pixels).
 bool fieldError( int width, int height, const std::vector< uint8_t >& mask, const std::vector< double >& exact, bool exactShape,
                  int perturb, FieldError& result )
 {
@@ -930,18 +1012,28 @@ bool fieldError( int width, int height, const std::vector< uint8_t >& mask, cons
 	int fw = 0, fh = 0;
 	session.plugin.ReadFieldForTest( field, fw, fh );
 	session.end();
-	if( fw != width || fh != height )
-		return false;
+	result             = FieldError{};
+	result.fieldWidth  = fw;
+	result.fieldHeight = fh;
+	if( fw != latticeSide( width ) || fh != latticeSide( height ) )
+	{
+		//Not on the working lattice: nothing to compare texel for texel.
+		result.lattice = false;
+		result.max     = 1.0e9;
+		return true;
+	}
 
 	double sum2 = 0.0;
 	size_t n    = 0;
-	result      = FieldError{};
+	const double k = kLattice;
 	for( size_t i = 0; i < exact.size(); ++i )
 	{
 		if( exact[ i ] <= -1.0e5 )
 			continue;//no region at all: nothing to be a distance to
 		const double e = std::fabs( static_cast< double >( field[ i ] ) - exact[ i ] );
-		const double bound = exactShape ? 6.0 * ulp( std::max( std::fabs( exact[ i ] ) + 0.5, 1.0 ) ) : std::sqrt( 2.0 );
+		//6 ULP of the texel distance before the half-texel came off, times
+		//k (exact); or sqrt2 texels, in job pixels.
+		const double bound = exactShape ? 6.0 * k * ulp( std::max( std::fabs( exact[ i ] ) / k + 0.5, 1.0 ) ) : std::sqrt( 2.0 ) * k;
 		if( e > bound )
 			++result.overBound;
 		result.max = std::max( result.max, e );
@@ -963,15 +1055,16 @@ int runDistance( int width, int height, int perturb, bool quiet = false )
 		height = fullHeight;
 		if( std::strcmp( shape.name, "constellation" ) == 0 )
 		{
-			const int k = constellationScale( fullWidth, fullHeight );
-			width       = 320 * k;
-			height      = 180 * k;
+			const int j = constellationScale( fullWidth, fullHeight );
+			width       = 320 * j * kLattice;
+			height      = 180 * j * kLattice;
 		}
 		std::vector< uint8_t > mask( static_cast< size_t >( width ) * height );
 		for( int y = 0; y < height; ++y )
 			for( int x = 0; x < width; ++x )
 				mask[ static_cast< size_t >( y ) * width + x ] = shape.inside( x + 0.5, y + 0.5 ) ? 1 : 0;
-		const std::vector< double > exact = exactField( mask, width, height );
+		const int fw = latticeSide( width ), fh = latticeSide( height );
+		const std::vector< double > exact = exactField( reduceMask( mask, width, height ), fw, fh, false, kLattice, width, height );
 
 		FieldError full, noPrepass, plain;
 		if( !fieldError( width, height, mask, exact, shape.exact, perturb, full ) )
@@ -984,17 +1077,28 @@ int runDistance( int width, int height, int perturb, bool quiet = false )
 			++failures;
 		if( quiet )
 			continue;
+		if( !full.lattice )
+		{
+			std::printf( "distance %-13s the field is %dx%d, not the working lattice's %dx%d  %s\n", shape.name, full.fieldWidth,
+			             full.fieldHeight, fw, fh, verdict( false ) );
+			continue;
+		}
 
 		fieldError( width, height, mask, exact, shape.exact, perturb | Toolpath::kPerturbNoPrepass, noPrepass );
 		fieldError( width, height, mask, exact, shape.exact,
 		            perturb | Toolpath::kPerturbNoPrepass | Toolpath::kPerturbNoFinish, plain );
-		std::printf( "distance %-13s max %.4f rms %.2e  | no prepass max %.4f rms %.2e | plain JFA max %.4f rms %.2e"
+		char bound[ 48 ];
+		if( shape.exact )
+			std::snprintf( bound, sizeof( bound ), "6 ULP" );
+		else
+			std::snprintf( bound, sizeof( bound ), "sqrt2 texels = %.2f px", std::sqrt( 2.0 ) * kLattice );
+		std::printf( "distance %-13s max %.4f px (%.4f texels) rms %.2e  | no prepass max %.4f px | plain JFA max %.4f px"
 		             "  bound %s  %s\n",
-		             shape.name, full.max, full.rms, noPrepass.max, noPrepass.rms, plain.max, plain.rms,
-		             shape.exact ? "6 ULP" : "sqrt2", verdict( full.ok ) );
+		             shape.name, full.max, full.max / kLattice, full.rms, noPrepass.max, plain.max, bound, verdict( full.ok ) );
 	}
 	if( !quiet )
-		std::printf( "distance: %s\n", failures == 0 ? "the flooded field is the exact EDT within its bound on every shape"
+		std::printf( "distance: %s\n", failures == 0 ? "the flooded field is the exact EDT of the working lattice within its "
+		                                               "bound on every shape"
 		                                             : "FAILURES" );
 	return failures;
 }
@@ -1074,17 +1178,23 @@ bool fitCircle( const std::vector< path::Point >& points, double& cx, double& cy
 // A square pocket, machined to the end. In each inside corner the stock the
 // round tool could not reach is bounded by a quarter circle of the tool's
 // radius, centred r in from both walls. The boundary is read out of the
-// Reveal picture -- the 0.5 crossing of the cut coverage along rows (the
-// steep half of the arc) and columns (the shallow half), at least 1.5 px
-// from either wall -- and a circle fitted to it.
+// Reveal picture -- the 0.5 crossing of the cut coverage along 61 rays from
+// the corner, 15 to 75 degrees -- and a circle tangent to both walls fitted.
+//
+// The walls are the POCKET's: where the working lattice put the source's
+// (latticeEdge) -- at 320x180 the square's edges are odd and each wall is a
+// pixel inside the source's; at 1280x720 they are even and it is not moved.
+// That the region lands there is --lattice's claim, not this one's.
 //
 // The spec's tolerance is one pixel on the radius. What the fit can be off
-// by, derived: the field of a square is exact (--distance); the traced
-// corner is a chord across the one cell that holds it, at most a quarter of
-// the cell's diagonal inside the true corner (0.35 px at one sample per
-// pixel); Douglas-Peucker moves the path 0.2 px at most; each crossing read
-// off a one-pixel ramp is within 0.09 px. 0.64 px in the worst case, under
-// the pixel.
+// by, derived: the field of a square is exact on the lattice (--distance)
+// and linear along each wall, so its bilinear samples on the trace grid are
+// exact there (at a quarter texel, weights 1/4 and 3/4, exact even in a
+// filter's 8 bits); the traced corner is cut where the field's ridge crosses
+// one texel, by at most a quarter of the TEXEL's diagonal (0.71 px at 2 px a
+// texel -- the bilinear corner of min( x, y ) sits 0.59 px in); Douglas-
+// Peucker moves the path 0.2 px at most; each crossing read off a one-pixel
+// ramp is within 0.09 px. 1.00 px in the worst case (0.997), at the pixel.
 //
 // The negative control cuts with a square tool, which reaches into the
 // corner and leaves no arc to find.
@@ -1092,10 +1202,13 @@ bool fitCircle( const std::vector< path::Point >& points, double& cx, double& cy
 int runFillet( int width, int height, int perturb, bool quiet = false )
 {
 	const int side = static_cast< int >( std::lround( 0.7 * height ) );
-	const int x0 = ( width - side ) / 2, y0 = ( height - side ) / 2;
-	const int x1 = x0 + side, y1 = y0 + side;//walls at x = x0, x1 and y = y0, y1
+	const int sx0 = ( width - side ) / 2, sy0 = ( height - side ) / 2;
+	const int sx1 = sx0 + side, sy1 = sy0 + side;
 	Image source( width, height, 0.0f );
-	source.fill( x0, y0, x1, y1, 1.0f );
+	source.fill( sx0, sy0, sx1, sy1, 1.0f );
+	//The pocket's walls, on the working lattice.
+	const int x0 = latticeEdge( sx0, true ), x1 = latticeEdge( sx1, false );
+	const int y0 = latticeEdge( sy0, true ), y1 = latticeEdge( sy1, false );
 
 	Image picture;
 	double r = 0.0;
@@ -1205,19 +1318,27 @@ int runFillet( int width, int height, int perturb, bool quiet = false )
 // --slot
 //
 // A pocket with a slot off its right wall, at two widths either side of the
-// tool's diameter, machined to the end.
+// tool's diameter, machined to the end. The field is on the working lattice,
+// k = kFieldScale px a texel, and the slot's walls land on it by the
+// majority rule: each moves INWARD by up to k/2 px, never out.
 //
-//   w < 2r   the field inside the slot never exceeds w/2 < r, and the
-//            sampled field never exceeds the true one, so no pass is traced
-//            in it: every path point is left of the mouth, or at most one
-//            trace cell past it where a crossing is interpolated across the
-//            mouth. Past mouth + cell + r + 1 px the cut coverage must be
-//            EXACTLY zero (the stamp's ramp ends at r + 0.5).
+//   w < 2r   the working slot is no wider than w, the field inside it never
+//            exceeds w/2 < r, and the sampled field never exceeds the true
+//            one, so no pass is traced in it. A trace sample can read at
+//            least r only if a texel it interpolates does, and every such
+//            texel is left of the mouth, so every sample at or past
+//            mouth + k/2 reads under r and a crossing is interpolated at
+//            most one trace cell further. Past mouth + k/2 + cell + r + 1 px
+//            the cut coverage must be EXACTLY zero (the stamp's ramp ends at
+//            r + 0.5). w is 2r - 2, as it was: the lattice only narrows it.
 //   w > 2r   the slot's own pass runs down its middle. Its centre row must
 //            be cut (coverage >= 0.5) from the mouth to within a pixel of
-//            the end wall. w is 2r + 2: the sampled peak can sit half a
-//            cell below the true one, and a row of centres can miss the
-//            peak by half a pixel -- one pixel of margin each.
+//            the working end wall. The sampled peak can be low by k/2 for
+//            the walls (together they move in by up to k, so the middle by
+//            k/2) and by k/2 more for the texel centres nearest the middle
+//            missing it, so w/2 - k must exceed r: w is the least integer
+//            over 2r + 2k (at the full raster, k = 1 and no wall moving, the
+//            same rule gave the 2r + 2 this check used to draw).
 //
 // The negative control starts the first pass at r/2, a tool gouging its
 // walls, which enters the narrow slot.
@@ -1227,10 +1348,11 @@ int runSlot( int width, int height, int perturb, bool quiet = false )
 	int failures = 0;
 	const double r0 = 0.5 * controls::ToolDiameterHeights( controls::ToolDiameterParam( 0.1f ) ) * height;
 	const int narrow = static_cast< int >( std::ceil( 2.0 * r0 ) ) - 2;
-	const int wide   = static_cast< int >( std::ceil( 2.0 * r0 ) ) + 2;
+	const int wide   = static_cast< int >( std::floor( 2.0 * r0 + 2.0 * kLattice ) ) + 1;
 	const int mouth  = static_cast< int >( std::lround( 0.45 * width ) );
 	const int end    = static_cast< int >( std::lround( 0.92 * width ) );
 	const int cell   = ( width + Toolpath::kTraceMaxWidth - 1 ) / Toolpath::kTraceMaxWidth;
+	const int endWall = latticeEdge( end, false );
 
 	for( int w : { narrow, wide } )
 	{
@@ -1250,7 +1372,7 @@ int runSlot( int width, int height, int perturb, bool quiet = false )
 
 		if( w < 2.0 * r )
 		{
-			const int from = static_cast< int >( std::ceil( mouth + cell + r + 1.0 ) );
+			const int from = static_cast< int >( std::ceil( mouth + 0.5 * kLattice + cell + r + 1.0 ) );
 			int cutPixels  = 0;
 			float worst    = 0.0f;
 			for( int y = s0; y < s1; ++y )
@@ -1270,10 +1392,11 @@ int runSlot( int width, int height, int perturb, bool quiet = false )
 		}
 		else
 		{
-			const int row  = s0 + w / 2;
+			//The working slot's middle row, and its working end wall.
+			const int row  = ( latticeEdge( s0, true ) + latticeEdge( s1, false ) ) / 2;
 			int uncut      = 0;
 			float least    = 1.0f;
-			for( int x = mouth; x < end - 1; ++x )
+			for( int x = mouth; x < endWall - 1; ++x )
 			{
 				const float c = coverage( picture, x, row );
 				if( c < 0.5f )
@@ -1284,9 +1407,9 @@ int runSlot( int width, int height, int perturb, bool quiet = false )
 			if( !ok )
 				++failures;
 			if( !quiet )
-				std::printf( "slot w = %d px > 2r = %.2f: its centre row cut from the mouth to the end, least coverage %.3f, "
+				std::printf( "slot w = %d px > 2r + 2k = %.2f: its centre row cut from the mouth to the end, least coverage %.3f, "
 				             "%d pixels under 0.5  %s\n",
-				             w, 2.0 * r, least, uncut, verdict( ok ) );
+				             w, 2.0 * r + 2.0 * kLattice, least, uncut, verdict( ok ) );
 		}
 	}
 	if( !quiet )
@@ -1308,9 +1431,13 @@ int runSlot( int width, int height, int perturb, bool quiet = false )
 //            0.25 px: two crossings, each read off a one-pixel ramp at
 //            pixel centres, where one of the two samples may be clamped --
 //            worst case 0.086 px each -- plus float. Nothing else moves a
-//            straight pass: the field is exact, marching squares is exact
-//            on a linear field, and Douglas-Peucker has nothing to remove.
-//   s <= 2r  no uncut run at all: every pixel from the wall to 0.3 h has
+//            straight pass: the field is exact on the lattice and linear
+//            beside a straight wall, so its bilinear samples on the trace
+//            grid are exact too (quarter-texel weights), marching squares is
+//            exact on a linear field, and Douglas-Peucker has nothing to
+//            remove. The working lattice moves the WALL (up to k/2 px in,
+//            --lattice), and every pass with it: a width does not see that.
+//   s <= 2r  no uncut run at all: every pixel from the (working) wall to 0.3 h has
 //            coverage >= 0.5 - 2^-11 (half a half-float ULP at 0.5: the cut
 //            buffer is R16F, and at s = 2r two bands meet at exactly 0.5).
 //
@@ -1319,11 +1446,13 @@ int runSlot( int width, int height, int perturb, bool quiet = false )
 int runScallop( int width, int height, int perturb, bool quiet = false )
 {
 	int failures = 0;
-	const int x0 = static_cast< int >( std::lround( 0.05 * width ) );
-	const int y0 = static_cast< int >( std::lround( 0.1 * height ) );
-	const int x1 = width - x0, y1 = height - y0;
+	const int sx0 = static_cast< int >( std::lround( 0.05 * width ) );
+	const int sy0 = static_cast< int >( std::lround( 0.1 * height ) );
 	Image source( width, height, 0.0f );
-	source.fill( x0, y0, x1, y1, 1.0f );
+	source.fill( sx0, sy0, width - sx0, height - sy0, 1.0f );
+	//The pocket's left, bottom and top walls, on the working lattice.
+	const int x0 = latticeEdge( sx0, true );
+	const int y0 = latticeEdge( sy0, true ), y1 = latticeEdge( height - sy0, false );
 
 	const float diameter = 0.06f;
 	for( float stepover : { 0.5f, 1.0f, 1.25f, 1.5f, 2.0f } )
@@ -1618,6 +1747,123 @@ int runLatch( int width, int height, int perturb, bool quiet = false )
 }
 
 //---------------------------------------------------------------------------
+// --lattice
+//
+// The field is computed on the working lattice -- kFieldScale job pixels a
+// texel -- and nowhere else. Every other check re-derives its tolerance for
+// that lattice; this one proves it is the lattice in use, out of the
+// plugin's own field, on a fixture a full-raster field cannot pass:
+//
+//   a pocket whose four walls are all at odd pixels -- the lattice moves
+//   each a pixel in; a single black pixel inside it (an outside speck, three
+//   quarters of its block inside, so on the lattice it is not there); and a
+//   white hairline one pixel wide beside it (half of every block it touches,
+//   not more, so on the lattice it is not a pocket at all).
+//
+//   raster   the field is ceil( W / k ) x ceil( H / k ) texels, and the
+//            plugin says k.
+//   sign     at EVERY job pixel, the field in the texel that holds it is
+//            positive exactly where the reduced mask (reduceMask, the
+//            plugin's majority rule, derived independently here) is inside:
+//            0 disagreements. And the fixture must be able to tell: the
+//            job-raster mask itself must disagree with the reduced one at
+//            some pixels, or a full-raster field would pass too.
+//
+// The negative control computes the field at the full raster.
+//---------------------------------------------------------------------------
+int runLattice( int width, int height, int perturb, bool quiet = false )
+{
+	const int k  = kLattice;
+	auto odd     = []( double v ) { return static_cast< int >( std::lround( v ) ) | 1; };
+	const int x0 = odd( 0.1 * width ), x1 = odd( 0.8 * width );
+	const int y0 = odd( 0.15 * height ), y1 = odd( 0.85 * height );
+	const int hair  = odd( 0.9 * width );
+	const int speckX = odd( 0.45 * width ), speckY = odd( 0.5 * height );
+
+	std::vector< uint8_t > mask( static_cast< size_t >( width ) * height, 0 );
+	auto put = [ & ]( int x, int y, uint8_t v ) {
+		if( x >= 0 && y >= 0 && x < width && y < height )
+			mask[ static_cast< size_t >( y ) * width + x ] = v;
+	};
+	for( int y = y0; y < y1; ++y )
+		for( int x = x0; x < x1; ++x )
+			put( x, y, 1 );
+	put( speckX, speckY, 0 );
+	for( int y = y0; y < y1; ++y )
+		put( hair, y, 1 );
+
+	Image source( width, height, 0.0f );
+	for( int y = 0; y < height; ++y )
+		for( int x = 0; x < width; ++x )
+			if( mask[ static_cast< size_t >( y ) * width + x ] )
+				source.set( x, y, 1.0f, 1.0f, 1.0f );
+
+	Session session;
+	baseline( session.plugin );
+	set( session.plugin, "Mode", static_cast< float >( controls::kField ) );
+	session.plugin.SetPerturbForTest( perturb );
+	if( !session.begin( width, height ) )
+	{
+		std::printf( "lattice: render failed  FAILED\n" );
+		return 1;
+	}
+	session.upload( source );
+	if( !session.renderAt( 0 ) )
+	{
+		session.end();
+		std::printf( "lattice: render failed  FAILED\n" );
+		return 1;
+	}
+	std::vector< float > field;
+	int fw = 0, fh = 0;
+	session.plugin.ReadFieldForTest( field, fw, fh );
+	const int scale = session.plugin.FieldScaleForTest();
+	session.end();
+
+	int failures = 0;
+	const int ww = latticeSide( width ), wh = latticeSide( height );
+	const bool rasterOk = fw == ww && fh == wh && scale == k;
+	if( !rasterOk )
+		++failures;
+	if( !quiet )
+		std::printf( "lattice raster: the field is %dx%d texels at %d px a texel, against %dx%d at %d  %s\n", fw, fh, scale, ww,
+		             wh, k, verdict( rasterOk ) );
+
+	//Sign, pixel by pixel: the field's texel for each job pixel, by the
+	//field's own size (so a full-raster field is read as what it is).
+	const std::vector< uint8_t > reduced = reduceMask( mask, width, height );
+	int disagree = 0, discriminating = 0;
+	for( int y = 0; y < height; ++y )
+		for( int x = 0; x < width; ++x )
+		{
+			const bool want = reduced[ static_cast< size_t >( y / k ) * ww + x / k ] != 0;
+			if( ( mask[ static_cast< size_t >( y ) * width + x ] != 0 ) != want )
+				++discriminating;
+			if( fw <= 0 || fh <= 0 )
+			{
+				++disagree;
+				continue;
+			}
+			const int tx = static_cast< int >( static_cast< long long >( x ) * fw / width );
+			const int ty = static_cast< int >( static_cast< long long >( y ) * fh / height );
+			const bool got = field[ static_cast< size_t >( ty ) * fw + tx ] > 0.0f;
+			if( got != want )
+				++disagree;
+		}
+	const bool signOk = disagree == 0 && discriminating > 0;
+	if( !signOk )
+		++failures;
+	if( !quiet )
+		std::printf( "lattice sign: %d of %d job pixels disagree with the reduced mask (must be 0); the job-raster mask "
+		             "differs from it at %d, so a full-raster field could not pass  %s\n",
+		             disagree, width * height, discriminating, verdict( signOk ) );
+	if( !quiet )
+		std::printf( "lattice: %s\n", failures == 0 ? "the region is decided, and the field computed, on the working lattice"
+		                                            : "FAILURES" );
+	return failures;
+}
+
+//---------------------------------------------------------------------------
 // --negative
 //
 // A check that cannot fail is not a check. Each of these perturbs the
@@ -1639,6 +1885,7 @@ int runNegative( int width, int height )
 		{ "feed advancing Feed/60 a frame, whatever dt   ", runFeed( width, height, Toolpath::kPerturbFeedPerFrame, true ) },
 		{ "latch with a resize that re-grabs the job     ", runLatch( width, height, Toolpath::kPerturbResizeClears, true ) },
 		{ "latch with a Restart that keeps the cut       ", runLatch( width, height, Toolpath::kPerturbRestartKeeps, true ) },
+		{ "lattice with the field at the full raster     ", runLattice( width, height, Toolpath::kPerturbFullResField, true ) },
 	};
 	int failures = 0;
 	for( const Control& c : controls )
@@ -2097,12 +2344,13 @@ void usage()
 		"  --set \"Name=V\"      set a parameter by its display name. Repeatable.\n"
 		"  --press \"Name@F\"    press an event parameter before frame F. Repeatable.\n"
 		"  --list              print every parameter, its kind, default and range, then exit\n"
-		"  --distance          the flooded field against an exact EDT, with and without the corrections\n"
+		"  --distance          the flooded field against an exact EDT of the working lattice, with and without the corrections\n"
 		"  --fillet            inside corners keep a fillet of the tool's radius\n"
 		"  --slot              a slot under 2r is never entered; over 2r it is cut end to end\n"
 		"  --scallop           ridges s - 2r wide past s = 2r; none at or below\n"
 		"  --feed              the tool covers Feed px of path per second, at 60 and 30 fps\n"
 		"  --latch             the part survives a resize; Restart clears it\n"
+		"  --lattice           the field is on the working lattice, kFieldScale px a texel\n"
 		"  --negative          every GL check above can fail\n"
 		"  --perturb BITS      run the checks against a perturbed plugin (Toolpath.h), verbosely\n"
 		"  --names             every parameter name fits 16 characters and is unique (no GL)\n"
@@ -2206,7 +2454,8 @@ int main( int argc, char** argv )
 				checks.push_back( c );
 		}
 		else if( argument == "--distance" || argument == "--fillet" || argument == "--slot" || argument == "--scallop"
-		         || argument == "--feed" || argument == "--latch" || argument == "--negative" || argument == "--names"
+		         || argument == "--feed" || argument == "--latch" || argument == "--lattice" || argument == "--negative"
+		         || argument == "--names"
 		         || argument == "--exact" || argument == "--march" || argument == "--negative-offline" )
 			checks.push_back( argument );
 		else
@@ -2302,6 +2551,8 @@ int main( int argc, char** argv )
 			result = runFeed( width, height, perturb );
 		else if( check == "--latch" )
 			result = runLatch( width, height, perturb );
+		else if( check == "--lattice" )
+			result = runLattice( width, height, perturb );
 		else if( check == "--negative" )
 			result = runNegative( width, height );
 		if( result < 0 )

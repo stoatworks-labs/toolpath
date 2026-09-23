@@ -63,6 +63,11 @@ struct Levels
 	double first = 0.0;///< the first level, the tool radius
 	double step  = 1.0;///< the stepover
 	int count    = 0;
+	/// Job pixels a texel of the field the grid was SAMPLED from, when that is
+	/// coarser than the grid (0: the samples are the field's own). A corner
+	/// of the field's ridge bends the sampled contour over a whole texel, so
+	/// SharpenCorners must look that far out for straight runs.
+	double fieldTexel = 0.0;
 };
 
 /// Test hooks, always 0 in the plugin. `tptest --negative-offline` sets them
@@ -82,8 +87,10 @@ std::vector< Loop > TraceLevels( const float* grid, int tw, int th, double cellW
 /// Put back the corners marching squares cuts off: where a loop runs
 /// straight, turns by more than 45 degrees and runs straight again, the few
 /// points between are replaced by the meeting point of the two straight
-/// runs. Called by TraceLevels; public for the harness.
-void SharpenCorners( Loop& loop, double cell );
+/// runs. The runs are read from kCornerReach cells out -- or kCornerReach
+/// field texels, if `fieldTexel` is coarser than `cell`. Called by
+/// TraceLevels; public for the harness.
+void SharpenCorners( Loop& loop, double cell, double fieldTexel = 0.0 );
 
 /// Douglas-Peucker on a closed loop, in place: no point of the original is
 /// further than `tolerance` from the simplified polygon.

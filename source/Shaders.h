@@ -5,22 +5,30 @@
 /**
 	The passes.
 
-	1. **detect** -- picture size, R16F. The Detect On channel (tinsel's:
-	   luma, alpha, chroma, or luma-or-alpha), read from the host's texture.
-	2. **blur** -- picture size, R16F, twice (x then y), only when Smooth is
-	   up: a Gaussian on the channel before the threshold.
-	3. **seed** -- picture size, RGBA16UI. The threshold (and Invert) decides
-	   inside and outside; each pixel starts the flood knowing only itself:
-	   (nearest outside x, y, nearest inside x, y), 65535 for "none yet".
+	Passes 1 to 5 run on the WORKING LATTICE: Toolpath::kFieldScale (2) job
+	pixels a texel, ceil( raster / 2 ) texels, at every raster.
+
+	1. **detect** -- lattice size, R16F. The Detect On channel (tinsel's:
+	   luma, alpha, chroma, or luma-or-alpha), read from the host's texture
+	   with texelFetch and averaged over each texel's 2 x 2 block of pixels.
+	2. **blur** -- lattice size, R16F, twice (x then y), only when Smooth is
+	   up: a Gaussian on the channel before the threshold, sigma in texels.
+	3. **seed** -- lattice size, RGBA16UI. The threshold (and Invert) decides
+	   inside and outside -- for a clean mask, a texel is inside when more
+	   than half its block is; each texel starts the flood knowing only
+	   itself: (nearest outside x, y, nearest inside x, y), 65535 for "none
+	   yet".
 	4. **flood** -- the jump flood, ping-ponged: a step-1 pass first (the
-	   "1+" of 1+JFA), then steps N/2, N/4 ... 1, then 2 and 1 again (the
-	   "+2" of JFA+2). Each pass looks at the eight pixels `Step` away and
+	   "1+" of 1+JFA), then steps N/2, N/4 ... 1, then a finish from N/128
+	   down to 1 again. Each pass looks at the eight texels `Step` away and
 	   keeps, for each of the two seeds, whichever is nearest.
-	5. **resolve** -- the signed distance field, R32F: inside positive, the
-	   distance to the nearest outside pixel centre, less half a pixel; the
-	   frame's edge is a wall; outside negative, the same way round.
-	6. **sample** -- the field at the trace grid's sample points, R32F, read
-	   back for the CPU tracer. Skipped when the grid is the job raster.
+	5. **resolve** -- the signed distance field, R32F, in JOB pixels: inside
+	   positive, the distance to the nearest outside texel centre less half a
+	   texel, times 2; the job frame's edge is a wall; outside negative, the
+	   same way round.
+	6. **sample** -- the field at the trace grid's sample points, bilinear,
+	   R32F, read back for the CPU tracer. Skipped when the grid is the
+	   lattice itself.
 	7. **stamp** -- instanced capsules. One quad per piece of path, aligned
 	   with it, blended with MAX: the tool's disc swept along the piece, into
 	   the cut buffer; or thin lines and the tool's ring into the overlay.

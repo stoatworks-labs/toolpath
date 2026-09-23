@@ -24,14 +24,19 @@
 #                 renders at, and 1280x720. A check that holds at one raster
 #                 was fitted to it. Each is measured out of the picture or the
 #                 plugin's own field:
-#                   --distance  the flood is the exact EDT: to 6 ULP on
-#                               rectilinear shapes, a pixel on curved ones
-#                               and on the constellation plain JFA misses
+#                   --distance  the flood is the exact EDT of its working
+#                               lattice (two pixels a texel): to 6 ULP on
+#                               rectilinear shapes, sqrt2 texels on curved
+#                               ones and on the constellation plain JFA
+#                               misses
 #                   --fillet    inside corners keep a fillet of radius r
 #                   --slot      under 2r never entered; over 2r cut through
 #                   --scallop   ridges of s - 2r past s = 2r; none below
 #                   --feed      Feed px of path a second, at 60 and 30 fps
 #                   --latch     Restart clears the part; a resize keeps it
+#                   --lattice   the field IS on the working lattice: its
+#                               size, and its sign at every pixel of a
+#                               fixture a full-raster field cannot match
 #                   --negative  every one of those FAILS on a perturbed plugin
 #   pipe          the fleet's --pipe contract: whole frames only, an unknown
 #                 cue refused, a closed stdout a failure.
@@ -93,7 +98,7 @@ done
 
 for size in 320x180 1280x720; do
 	step "geometry at $size"
-	for check in distance fillet slot scallop feed latch negative; do
+	for check in distance fillet slot scallop feed latch lattice negative; do
 		if out=$("$TPTEST" --$check --size $size 2>&1); then
 			pass "tptest --$check: $( printf '%s\n' "$out" | grep -v '^$' | tail -1 )"
 		else
