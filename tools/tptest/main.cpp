@@ -62,6 +62,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <csignal>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -2089,6 +2090,7 @@ void usage()
 		"  --march             the tracer and the ordering on analytic fields (no GL)\n"
 		"  --negative-offline  the no-GL checks can fail\n"
 		"  --offline           all of the no-GL checks: what CI runs on a runner with no GPU\n"
+		"  --allow-no-gl       with GL checks: SKIP loudly, not FAIL, when no context can be made\n"
 		"  --bench             time ProcessOpenGL at 720p and 1080p, Latch and Live, and the field\n"
 		"  --bench-4k          --bench, and 4K too (slow on a shared machine: once, not in a loop)\n"
 		"  --dump-shaders DIR  write the exact GLSL the plugin compiles\n"
@@ -2113,6 +2115,7 @@ int main( int argc, char** argv )
 	bool wantBench = false;
 	bool bench4k   = false;
 	bool wantPipe  = false;
+	bool allowNoGL = false;
 	std::vector< std::string > settings;
 	std::vector< std::pair< std::string, int > > presses;
 	std::vector< std::string > checks;
@@ -2173,6 +2176,8 @@ int main( int argc, char** argv )
 			wantBench = bench4k = true;
 		else if( argument == "--pipe" )
 			wantPipe = true;
+		else if( argument == "--allow-no-gl" )
+			allowNoGL = true;
 		else if( argument == "--offline" )
 		{
 			//Defined HERE, as every check that needs no GL, so a new one
@@ -2243,6 +2248,15 @@ int main( int argc, char** argv )
 	CGLContextObj context = createContext();
 	if( context == nullptr )
 	{
+		//A GitHub macOS runner cannot make an accelerated 4.1 context. With
+		//--allow-no-gl that is a loud SKIP of the GL checks rather than a
+		//red build that says nothing about the plugin; without it, a failure.
+		if( allowNoGL )
+		{
+			std::printf( "SKIPPED (--allow-no-gl): no OpenGL 4.1 context on this machine, so NONE of the GL checks ran.\n"
+			             "They run on the dev Mac in tools/verify.sh.\n" );
+			return failures == 0 ? 0 : 1;
+		}
 		std::fprintf( stderr, "could not create an OpenGL context\n" );
 		return 1;
 	}
@@ -2305,6 +2319,12 @@ int main( int argc, char** argv )
 
 	if( wantPipe )
 	{
+		//A reader that goes away mid-stream would otherwise kill this process
+		//with SIGPIPE on the next write -- exit 141, and no word on stderr.
+		//Ignored, the write fails with EPIPE, and the loop below says so and
+		//exits 1, which is the contract.
+		std::signal( SIGPIPE, SIG_IGN );
+
 		std::map< unsigned int, Track > automation;
 		if( !scriptPath.empty() )
 		{
