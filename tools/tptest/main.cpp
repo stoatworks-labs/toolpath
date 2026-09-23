@@ -1336,9 +1336,16 @@ int runFillet( int width, int height, int perturb, bool quiet = false )
 //            the working end wall. The sampled peak can be low by k/2 for
 //            the walls (together they move in by up to k, so the middle by
 //            k/2) and by k/2 more for the texel centres nearest the middle
-//            missing it, so w/2 - k must exceed r: w is the least integer
-//            over 2r + 2k (at the full raster, k = 1 and no wall moving, the
-//            same rule gave the 2r + 2 this check used to draw).
+//            missing it, so the peak is at least w/2 - k, and w is the least
+//            integer with w/2 - k >= r + 1/2: half a pixel of peak over the
+//            worst case, w = 2r + 2k + 1 (23 px at 180p, 77 at 720p). At the
+//            full raster, k = 1 with only the texel's half pixel to lose, the
+//            same rule gives the 2r + 2 this check used to draw. NOT the
+//            least integer over 2r + 2k: that was 22 at 180p, over it only
+//            because the Tool Diameter control's float round trip leaves r
+//            at 8.99999, and at 180p the slot sits in the worst case -- odd
+//            walls, an even count of texels -- so the sampled peak was 9.000
+//            against r = 8.99999, and it passed by float noise.
 //
 // The negative control starts the first pass at r/2, a tool gouging its
 // walls, which enters the narrow slot.
@@ -1348,7 +1355,7 @@ int runSlot( int width, int height, int perturb, bool quiet = false )
 	int failures = 0;
 	const double r0 = 0.5 * controls::ToolDiameterHeights( controls::ToolDiameterParam( 0.1f ) ) * height;
 	const int narrow = static_cast< int >( std::ceil( 2.0 * r0 ) ) - 2;
-	const int wide   = static_cast< int >( std::floor( 2.0 * r0 + 2.0 * kLattice ) ) + 1;
+	const int wide   = static_cast< int >( std::ceil( 2.0 * r0 + 2.0 * kLattice + 1.0 - 1e-6 ) );
 	const int mouth  = static_cast< int >( std::lround( 0.45 * width ) );
 	const int end    = static_cast< int >( std::lround( 0.92 * width ) );
 	const int cell   = ( width + Toolpath::kTraceMaxWidth - 1 ) / Toolpath::kTraceMaxWidth;
@@ -1407,9 +1414,9 @@ int runSlot( int width, int height, int perturb, bool quiet = false )
 			if( !ok )
 				++failures;
 			if( !quiet )
-				std::printf( "slot w = %d px > 2r + 2k = %.2f: its centre row cut from the mouth to the end, least coverage %.3f, "
-				             "%d pixels under 0.5  %s\n",
-				             w, 2.0 * r + 2.0 * kLattice, least, uncut, verdict( ok ) );
+				std::printf( "slot w = %d px >= 2r + 2k + 1 = %.2f: its centre row cut from the mouth to the end, least coverage "
+				             "%.3f, %d pixels under 0.5  %s\n",
+				             w, 2.0 * r + 2.0 * kLattice + 1.0, least, uncut, verdict( ok ) );
 		}
 	}
 	if( !quiet )
