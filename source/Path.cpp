@@ -17,6 +17,18 @@ struct Segment
 	int level;
 };
 
+/// A corner, for SharpenCorners: the straight runs either side turn by more
+/// than 45 degrees, and each run is straight to 5 degrees over its three
+/// points. A circle of radius rho turns by about cell / rho per point, so its
+/// runs are not straight until rho is over ~11 cells, and by then three
+/// points turn by far less than 45 degrees: no circle is ever sharpened.
+constexpr double kCornerCosine   = 0.7071067811865476;//cos 45 degrees
+constexpr double kStraightCosine = 0.9961946980917455;//cos 5 degrees
+
+/// How far out, in points, the straight runs either side of a corner start;
+/// the points between them are the ones a corner can have put wrong.
+constexpr int kCornerReach = 2;
+
 double distance( const Point& a, const Point& b )
 {
 	return std::hypot( b.x - a.x, b.y - a.y );
@@ -127,6 +139,7 @@ std::vector< Loop > TraceLevels( const float* grid, int tw, int th, double cellW
 					{ 1, i, j },    //left:   (i, j)-(i, j+1)
 				};
 
+
 				//A segment runs from an edge where the inside is LEAVING
 				//(corner n in, corner n+1 out) to an edge where it is
 				//ENTERING (n out, n+1 in): then the inside is on its left.
@@ -154,10 +167,10 @@ std::vector< Loop > TraceLevels( const float* grid, int tw, int th, double cellW
 						continue;
 
 					Segment s;
-					s.level    = k;
-					s.startKey = key( k, edges[ n ].vertical, edges[ n ].i, edges[ n ].j );
-					s.endKey   = key( k, edges[ m ].vertical, edges[ m ].i, edges[ m ].j );
-					s.start    = crossing( level, edges[ n ].vertical, edges[ n ].i, edges[ n ].j );
+					s.level     = k;
+					s.startKey  = key( k, edges[ n ].vertical, edges[ n ].i, edges[ n ].j );
+					s.endKey    = key( k, edges[ m ].vertical, edges[ m ].i, edges[ m ].j );
+					s.start     = crossing( level, edges[ n ].vertical, edges[ n ].i, edges[ n ].j );
 					segments.push_back( s );
 				}
 			}
@@ -188,10 +201,130 @@ std::vector< Loop > TraceLevels( const float* grid, int tw, int th, double cellW
 			at = next->second;
 		}
 		if( loop.points.size() >= 3 )
+		{
+			if( !( perturb & kTraceNoCorners ) )
+				SharpenCorners( loop, std::max( cellW, cellH ) );
 			loops.push_back( std::move( loop ) );
+		}
 	}
 
 	return loops;
+}
+
+//---------------------------------------------------------------------------
+// Corners. Marching squares joins a cell's two crossings with a chord, and
+// where the contour has a corner inside the cell the chord cuts it off -- by
+// up to a quarter of the cell's diagonal. Worse, the field of a pocket has a
+// RIDGE running into every corner of an offset contour (its medial axis),
+// and a crossing on a cell edge the ridge also crosses is interpolated
+// across the kink and lands off the contour. A pocket's offset contours have
+// a corner wherever the pocket does, which is exactly where the fillet is.
+//
+// So: where the contour runs straight, turns by more than 45 degrees, and
+// runs straight again, the corner is where the two straight runs' lines
+// meet, and the few points between them -- the ones the ridge can have put
+// wrong -- are replaced by it. The lines are taken from points kCornerReach
+// and more away, which lie on cell edges the ridge does not cross.
+//---------------------------------------------------------------------------
+void SharpenCorners( Loop& loop, double cell )
+{
+	const int n = static_cast< int >( loop.points.size() );
+	if( n < 4 * ( kCornerReach + 2 ) )
+		return;
+	auto P = [ & ]( int i ) -> const Point& {
+		return loop.points[ static_cast< size_t >( ( ( i % n ) + n ) % n ) ];
+	};
+	auto unit = []( const Point& a, const Point& b, Point& u ) {
+		const double l = std::hypot( b.x - a.x, b.y - a.y );
+		if( l <= 1e-12 )
+			return false;
+		u = Point{ ( b.x - a.x ) / l, ( b.y - a.y ) / l };
+		return true;
+	};
+	auto dot = []( const Point& a, const Point& b ) {
+		return a.x * b.x + a.y * b.y;
+	};
+
+	//Candidate corners: the tightest turn in each neighbourhood.
+	std::vector< double > turn( static_cast< size_t >( n ), 0.0 );
+	for( int i = 0; i < n; ++i )
+	{
+		Point u, v;
+		if( unit( P( i - 1 ), P( i ), u ) && unit( P( i ), P( i + 1 ), v ) )
+			turn[ static_cast< size_t >( i ) ] = 1.0 - dot( u, v );
+	}
+
+	struct Corner
+	{
+		int at;
+		Point x;
+	};
+	std::vector< Corner > corners;
+	for( int i = 0; i < n; ++i )
+	{
+		bool peak = true;
+		for( int k = -kCornerReach; k <= kCornerReach && peak; ++k )
+			if( k != 0 && turn[ static_cast< size_t >( ( ( i + k ) % n + n ) % n ) ] > turn[ static_cast< size_t >( i ) ] )
+				peak = false;
+		if( !peak || turn[ static_cast< size_t >( i ) ] <= 1e-12 )
+			continue;
+
+		//The straight runs: three points each, starting kCornerReach out.
+		const Point& a0 = P( i - kCornerReach - 2 );
+		const Point& a1 = P( i - kCornerReach - 1 );
+		const Point& a2 = P( i - kCornerReach );
+		const Point& b0 = P( i + kCornerReach );
+		const Point& b1 = P( i + kCornerReach + 1 );
+		const Point& b2 = P( i + kCornerReach + 2 );
+		Point ua, ua2, ub, ub2;
+		if( !unit( a0, a1, ua ) || !unit( a1, a2, ua2 ) || !unit( b0, b1, ub ) || !unit( b1, b2, ub2 ) )
+			continue;
+		if( dot( ua, ua2 ) < kStraightCosine || dot( ub, ub2 ) < kStraightCosine )
+			continue;//not straight either side: a curve, not a corner
+		if( dot( ua2, ub ) > kCornerCosine )
+			continue;//straight, but not turning enough to be a corner
+
+		//a2 + s ua2 = b0 + t ub.
+		const double det = ua2.x * ( -ub.y ) - ua2.y * ( -ub.x );
+		if( std::fabs( det ) < 1e-12 )
+			continue;
+		const double rx = b0.x - a2.x, ry = b0.y - a2.y;
+		const double s  = ( rx * ( -ub.y ) - ry * ( -ub.x ) ) / det;
+		const Point x   = { a2.x + s * ua2.x, a2.y + s * ua2.y };
+
+		//It must be the corner these points were cutting: every point
+		//replaced within reach of it.
+		bool near = true;
+		for( int k = -kCornerReach + 1; k <= kCornerReach - 1; ++k )
+			if( std::hypot( P( i + k ).x - x.x, P( i + k ).y - x.y ) > ( kCornerReach + 0.5 ) * cell )
+				near = false;
+		if( near && ( corners.empty() || i - corners.back().at > 2 * kCornerReach ) )
+			corners.push_back( { i, x } );
+	}
+	if( corners.empty() )
+		return;
+
+	//Rebuild: each corner's inner points (i - reach + 1 .. i + reach - 1)
+	//become the one corner point.
+	std::vector< uint8_t > drop( static_cast< size_t >( n ), 0 );
+	std::vector< int > cornerAt( static_cast< size_t >( n ), -1 );
+	for( size_t c = 0; c < corners.size(); ++c )
+	{
+		for( int k = -kCornerReach + 1; k <= kCornerReach - 1; ++k )
+			drop[ static_cast< size_t >( ( ( corners[ c ].at + k ) % n + n ) % n ) ] = 1;
+		cornerAt[ static_cast< size_t >( corners[ c ].at ) ] = static_cast< int >( c );
+	}
+	std::vector< Point > rebuilt;
+	rebuilt.reserve( static_cast< size_t >( n ) );
+	for( int i = 0; i < n; ++i )
+	{
+		if( cornerAt[ static_cast< size_t >( i ) ] >= 0 )
+			rebuilt.push_back( corners[ static_cast< size_t >( cornerAt[ static_cast< size_t >( i ) ] ) ].x );
+		else if( !drop[ static_cast< size_t >( i ) ] )
+			rebuilt.push_back( loop.points[ static_cast< size_t >( i ) ] );
+	}
+	if( rebuilt.size() >= 3 )
+		loop.points = std::move( rebuilt );
 }
 
 //---------------------------------------------------------------------------

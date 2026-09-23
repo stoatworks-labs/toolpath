@@ -21,7 +21,11 @@
 	visited once and emits a segment for every level that crosses it -- the
 	levels between its lowest and highest corner -- so the work is the
 	number of cells plus the total contour length, not cells x levels.
-	Saddles are resolved by the mean of the four corners. Segments are
+	Saddles are resolved by the mean of the four corners. Where a contour
+	runs straight into a corner and straight out of it -- an offset contour
+	of a pocket's corner -- the corner is put back where the two straight
+	runs meet, rather than cut off by the chord marching squares draws across
+	its cell (SharpenCorners). Segments are
 	oriented with the higher field on the LEFT, so a loop runs anticlockwise
 	round the deeper part of the pocket it encloses (and clockwise round an
 	island, which it keeps on its right).
@@ -66,6 +70,7 @@ struct Levels
 enum TracePerturb
 {
 	kTraceNearestCrossing = 1 << 0,///< put a crossing at the nearer sample, not interpolated
+	kTraceNoCorners       = 1 << 1,///< join every cell's crossings with the chord, never a corner
 };
 
 /// Trace every level of `levels` through a `tw` x `th` grid of samples (row
@@ -73,6 +78,12 @@ enum TracePerturb
 /// Loops shorter than three points are dropped.
 std::vector< Loop > TraceLevels( const float* grid, int tw, int th, double cellW, double cellH, const Levels& levels,
                                  int perturb = 0 );
+
+/// Put back the corners marching squares cuts off: where a loop runs
+/// straight, turns by more than 45 degrees and runs straight again, the few
+/// points between are replaced by the meeting point of the two straight
+/// runs. Called by TraceLevels; public for the harness.
+void SharpenCorners( Loop& loop, double cell );
 
 /// Douglas-Peucker on a closed loop, in place: no point of the original is
 /// further than `tolerance` from the simplified polygon.
