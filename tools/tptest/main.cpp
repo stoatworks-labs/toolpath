@@ -1977,7 +1977,7 @@ int runBench( const std::vector< std::string >& settings, int frames, double fps
 		sizes.push_back( { "3840x2160 ", 3840, 2160 } );
 
 	std::printf( "%d frames each, best of three runs, after a 20-frame warm-up, glFinish both sides.\n\n", frames );
-	std::printf( "resolution   Latch ms/frame   Live ms/frame   field (1+JFA+2) ms   trace+order ms\n" );
+	std::printf( "resolution   Latch ms/frame   Live ms/frame   field (flood) ms      trace+order ms\n" );
 	for( const Size& size : sizes )
 	{
 		const BenchResult latch = benchAt( settings, size.width, size.height, frames, fps, false );
