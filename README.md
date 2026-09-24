@@ -109,6 +109,14 @@ no climb-or-conventional choice, and no finishing pass along the medial axis, so
 a pocket whose last pass falls short of its middle keeps an island there, as a
 real job without a cleanup pass would.
 
+[![Toolpath — CNC pocketing from a distance field, for Resolume](docs/video-thumb.png)](https://www.youtube.com/watch?v=awPH12ObwPU)
+
+*[Watch it](https://www.youtube.com/watch?v=awPH12ObwPU) — 51 seconds:
+Latch clearing a clip's bright shapes outside in, Paths drawing every offset pass and the rapids, a stepover past the tool's diameter leaving ridges of stock, Engrave with its light turning, Field drawing the distance itself, and Live following the clip with limbs narrower than the tool left uncut. Every frame is the real plugin's output: an FFGL plugin has no window,
+so the footage is rendered by this repository's own offline harness
+(`tptest --pipe`, driven by a cue sheet) rather than filmed off a screen, and
+the clips are Resolume's bundled demo media.*
+
 ## Controls
 
 | Group | |
