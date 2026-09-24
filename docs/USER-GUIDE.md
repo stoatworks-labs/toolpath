@@ -457,7 +457,10 @@ the unit the plugin has settled on for it.
 - **Latch cannot see a clip retrigger.** Press Restart.
 - **Only ever measured on one Apple silicon Mac.** The macOS build contains an Intel slice, and
   nothing here says it has been run.
-- **No presets**, no OpenFX version and no browser demo.
+- **No presets** and no OpenFX version.
+- **There is a browser demo** at [toolpath-demo.stoatworks-labs.com](https://toolpath-demo.stoatworks-labs.com).
+  It is a port to a web page, not the plugin: the shaders run in WebGL2 and any CPU
+  half is rewritten in JavaScript. The page lists what it does not reproduce.
 
 ---
 
