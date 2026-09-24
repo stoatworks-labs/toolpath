@@ -25,6 +25,38 @@ CNC pocketing from a distance field, as an FFGL effect for
 Resolume. Engrave mode, the stepover at 1.3 tool diameters so the ridges show,
 six and a half seconds into the job.</sub>
 
+<!-- downloads:start -->
+
+## Download
+
+**[v0.1.0](https://github.com/stoatworks-labs/toolpath/releases/tag/v0.1.0)** — prebuilt for macOS and Windows. Pick your platform:
+
+<details>
+<summary><b>macOS</b> — Universal (Apple Silicon + Intel)</summary>
+
+| Build | Download | Size |
+| --- | --- | --- |
+| Universal (Apple Silicon + Intel) · .dmg disk image | [`toolpath-0.1.0-macos-universal.dmg`](https://github.com/stoatworks-labs/toolpath/releases/download/v0.1.0/toolpath-0.1.0-macos-universal.dmg) | 255 KB |
+| Universal (Apple Silicon + Intel) · .zip archive | [`toolpath-macos-universal.zip`](https://github.com/stoatworks-labs/toolpath/releases/latest/download/toolpath-macos-universal.zip) | 215 KB |
+
+</details>
+
+<details>
+<summary><b>Windows</b> — x64</summary>
+
+| Build | Download | Size |
+| --- | --- | --- |
+| x64 · .exe installer | [`toolpath-0.1.0-windows-x86_64-setup.exe`](https://github.com/stoatworks-labs/toolpath/releases/download/v0.1.0/toolpath-0.1.0-windows-x86_64-setup.exe) | 236 KB |
+| x64 · .zip archive | [`toolpath-windows-x86_64.zip`](https://github.com/stoatworks-labs/toolpath/releases/latest/download/toolpath-windows-x86_64.zip) | 131 KB |
+
+</details>
+
+All builds, checksums and release notes: [github.com/stoatworks-labs/toolpath/releases](https://github.com/stoatworks-labs/toolpath/releases).
+
+macOS builds are signed and notarised and open normally. The Windows builds are unsigned, so SmartScreen warns once.
+
+<!-- downloads:end -->
+
 ## The one idea
 
 A CNC router clears a pocket with a round tool. The tool's centre can only go
