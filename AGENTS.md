@@ -494,8 +494,9 @@ job time at this feed, progress and the readback-and-trace cost.
   readers), always inert: the negative controls must perturb the plugin, not the
   harness's expectation.
 - **`StoatworksAbout.h`, `StoatworksAboutLinks.h`, `StoatworksAboutParams.h` and
-  `ATTRIBUTIONS.md` are provisional hand copies**, adapted from rebate's, with
-  `guide=""`: register the project and re-run the syncs before the first release.
+  `ATTRIBUTIONS.md` come from stoatworks-backend's** `sync-about.py` and
+  `sync-attributions.py`, run once the project was registered (b0e9687, before the
+  release). They began as hand copies of rebate's. Edit them there, not here.
 - **The commit trailer names the model that did the work** (`Claude Opus 5.5`), as the
   session's instructions asked, over the brief's.
 
@@ -568,7 +569,7 @@ build, at 320×180 and 1280×720, with the same checks passing at 640×480, 333�
 
 ### Assumed, or not done
 
-- ☠️ **Never loaded into Resolume**, on either platform. Everything was compiled,
+- ☠️ **Never loaded into Resolume on macOS.** Everything there was compiled,
   rendered and measured offline against the real plugin class in a headless CGL
   context, plus an `oxbow` load.
 - **Never seen on footage.** Every picture is the synthetic card. A thresholded clip
@@ -584,14 +585,14 @@ build, at 320×180 and 1280×720, with the same checks passing at 640×480, 333�
   line in the clip that never becomes a pocket, are measured, not seen on footage.
 - **The trace at 1080p and 4K** is on a grid 1.5 and 3 px a sample; every check ran at
   or under 1280 wide, where it is one sample a pixel, except by hand at 1920×1080.
-- **The clock-unit voting** is readout's, which has met Arena; this plugin has not.
+- **The clock-unit voting** is readout's, which has met Arena; this plugin has met it
+  only in the Windows fleet gate (below).
 - **Windows has only met Arena on software rendering**: v0.1.0's CI build in the
   fleet gate on win-lab (Arena 7.27.1, llvmpipe). See the README's status.
 - **No OpenFX port.** Not required for 0.1.0.
 - **The browser demo's CPU half is a port** that only a reader checks; `verify.sh`
   checks the demo's shader copies, not the port. Cross-checked once, 2026-09-24,
   bit-exact against `Path.cpp` on three grids; not re-checked since.
-- **The provisional About headers and ATTRIBUTIONS** are hand copies (above).
 - **Nothing has been through a show.**
 
 ---

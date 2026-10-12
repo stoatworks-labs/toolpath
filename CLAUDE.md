@@ -106,8 +106,10 @@ or any check's tolerance.
 ## Browser demo
 
 `demo/` is the page at **toolpath-demo.stoatworks-labs.com**, deployed from
-`wrangler.toml` in this repo with `cf-run npx wrangler deploy` — no build step;
-what is committed is what is served. `demo/vendor/` is the shared kit from
+`wrangler.toml` in this repo by `.github/workflows/deploy.yml` on every push to main
+that touches more than docs (before 2026-09-24 it was `cf-run npx wrangler deploy` by
+hand) — no build step; what is committed is what is served. `demo/vendor/` is the
+shared kit from
 `~/Projects/infrastructure/stoatworks-backend/resolume-demo/` (plus
 `support-footer/support-footer.js`) and is not a place to edit.
 
