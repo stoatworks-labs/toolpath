@@ -448,11 +448,13 @@ the unit the plugin has settled on for it.
 
 ## Known limits
 
-- **Never loaded into Resolume on macOS**, and nothing has driven the controls in a host. I
-  haven't tested how the 25 controls in five groups, the colour swatches and the Restart button
-  look in the inspector, what Resolume's clock does to a latched job across a clip retrigger, or
-  whether a Live job at 4K keeps up inside Resolume's own frame.
-- **Only ever seen on a synthetic test card**, never on footage.
+- **Never loaded into Resolume on macOS**, and on a Mac nothing has driven the controls in a
+  host. I haven't tested how the 25 controls in five groups, the colour swatches and the Restart
+  button look in the inspector, what Resolume's clock does to a latched job across a clip
+  retrigger, or whether a Live job at 4K keeps up inside Resolume's own frame.
+- **Only ever measured on synthetic images.** The only footage it has seen is Resolume's bundled
+  demo clips, through the offline harness, for the
+  [project video](https://www.youtube.com/watch?v=awPH12ObwPU).
 - **The region is taken on a lattice of two pixels a side.** Its walls are two-pixel steps, a wall
   that falls half way across a block moves a pixel into the pocket (never out), and anything
   narrower than the lattice, like a one-pixel line or a single pixel, isn't seen at all.

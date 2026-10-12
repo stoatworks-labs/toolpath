@@ -191,7 +191,8 @@ compiled, rendered and measured offline against the real plugin class in a
 headless CGL context, plus an `oxbow` load. I haven't tested how 25 controls in
 five groups look in Arena's inspector, what Resolume's clock does to Latch across
 a clip retrigger, or whether a Live job at 4K keeps up inside Resolume's own
-frame. The look has only been seen on a synthetic test card, never on footage.
+frame. The look has only been seen on footage through the harness, on Resolume's
+bundled demo clips for the video above; every measurement is on synthetic images.
 
 On Windows, v0.1.0's CI build passed the fleet Arena gate 9 of 9 on win-lab
 (Resolume Arena 7.27.1, Mesa llvmpipe, no GPU, 2026-09-24): it loads from Extra
